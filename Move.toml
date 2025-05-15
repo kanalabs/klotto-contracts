@@ -1,0 +1,16 @@
+[package]
+name = "klotto-contracts"
+version = "1.0.0"
+authors = []
+
+[addresses]
+lotto_addr = "0xad29653c9e24021afd32879585e427c155f2a70b0d05264474b330df4843997c"
+kanalabs = "0xad29653c9e24021afd32879585e427c155f2a70b0d05264474b330df4843997c"
+[dev-addresses]
+
+[dependencies.AptosFramework]
+git = "https://github.com/aptos-labs/aptos-framework.git"
+rev = "mainnet"
+subdir = "aptos-framework"
+
+[dev-dependencies]
