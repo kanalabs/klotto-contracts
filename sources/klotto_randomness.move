@@ -2,7 +2,7 @@ module lotto_addr::klotto_randomness {
     use std::error;
     use std::signer;
     use std::vector;
-    use aptos_std::event::{Self, EventHandle};
+    use aptos_framework::event;
     use aptos_framework::account;
     use aptos_framework::timestamp;
     use aptos_framework::randomness;
@@ -20,11 +20,9 @@ module lotto_addr::klotto_randomness {
         last_draw_time: u64,
         white_balls: vector<u8>,
         powerball: u8,
-        
-        // Events
-        draw_events: EventHandle<DrawEvent>,
     }
 
+    #[event]
     struct DrawEvent has drop, store {
         white_balls: vector<u8>,
         powerball: u8,
@@ -42,7 +40,6 @@ module lotto_addr::klotto_randomness {
             last_draw_time: timestamp::now_seconds(),
             white_balls: vector::empty(),
             powerball: 0,
-            draw_events: account::new_event_handle<DrawEvent>(admin),
         });
     }
 
@@ -87,8 +84,7 @@ module lotto_addr::klotto_randomness {
         let draw_id = current_time + (seed % 1000000);
         
         // Emit draw event
-        event::emit_event(
-            &mut state.draw_events,
+        event::emit(
             DrawEvent {
                 white_balls,
                 powerball: powerball_num,
