@@ -64,29 +64,10 @@ module klotto::treasury {
             &constructor_ref,
             object::address_to_object<Metadata>(USDT_ASSET)
         );
-                
-        let admin_store_addr = primary_fungible_store::primary_store_address(
-            signer::address_of(admin),
-            object::address_to_object<Metadata>(USDT_ASSET)
-        );
-        
-        assert!(fungible_asset::store_exists(admin_store_addr), ENO_STORE);
-        
-        let admin_store = object::address_to_object<FungibleStore>(admin_store_addr);
-        
-        // Verify admin has sufficient balance first (using dispatchable version)
-        assert!(
-            fungible_asset::balance(admin_store) >= 10000000,
-            EINSUFFICIENT_BALANCE
-        );
-        
-        // Use dispatchable version for USDT transfers
-        let initial_usdt = dispatchable_fungible_asset::withdraw(admin, admin_store, 10000000);
-        dispatchable_fungible_asset::deposit(vault, initial_usdt);
         
         move_to(admin, Treasury {
             vault,
-            total_deposited: 10000000
+            total_deposited: 0
         });
     }
 

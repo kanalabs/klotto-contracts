@@ -1,13 +1,14 @@
-module lotto_addr::lotto {
+module klotto::lotto {
     use std::signer;
     use std::vector;
     use std::string::String;
     use aptos_framework::event;
     use aptos_framework::timestamp;
-    use aptos_framework::fungible_asset;
-    use aptos_framework::fungible_asset::{Metadata};
+    use aptos_framework::fungible_asset::{Self, FungibleStore, Metadata};
+    use aptos_framework::dispatchable_fungible_asset;
     use aptos_framework::object;
     use aptos_framework::primary_fungible_store;
+    use klotto::lotto_pots;
 
     // USDT FA address
     const USDT_ASSET: address = @0xd5d0d561493ea2b9410f67da804653ae44e793c2423707d4f11edb2e38192050;
@@ -20,13 +21,7 @@ module lotto_addr::lotto {
     const ERROR_INVALID_NUMBERS: u64 = 5;
     const ERROR_ASSET_NOT_REGISTERED: u64 = 6;
     const ERROR_INSUFFICIENT_BALANCE: u64 = 7;
-
-    struct LottoConfig has key {
-        daily_price: u64,
-        biweekly_price: u64,
-        monthly_price: u64,
-        treasury_address: address,
-    }
+    const ERROR_POT_NOT_FOUND: u64 = 8;
 
     #[event]
     struct TicketPurchaseEvent has drop, store {
@@ -42,60 +37,26 @@ module lotto_addr::lotto {
         timestamp: u64,
     }
 
-    // Initialize the module with lottery configuration
-    public entry fun initialize(
-        admin: &signer,
-        daily_price: u64,
-        biweekly_price: u64,
-        monthly_price: u64,
-    ) {
-        assert!(signer::address_of(admin) == @lotto_addr, 0);
-
-        move_to(admin, LottoConfig {
-            daily_price,
-            biweekly_price,
-            monthly_price,
-            treasury_address: @kanalabs,
-        });
-    }
-
-    public entry fun update_config(
-        admin: &signer,
-        daily_price: u64,
-        biweekly_price: u64,
-        monthly_price: u64,
-        treasury_address: address
-    ) acquires LottoConfig {
-        assert!(signer::address_of(admin) == @lotto_addr, 0);
-        let config = borrow_global_mut<LottoConfig>(@lotto_addr);
-        config.daily_price = daily_price;
-        config.biweekly_price = biweekly_price;
-        config.monthly_price = monthly_price;
-        config.treasury_address = treasury_address;
-    }
-
-    #[view]
-    public fun get_prices(config_addr: address): (u64, u64, u64) acquires LottoConfig {
-        let config = borrow_global<LottoConfig>(config_addr);
-        (config.daily_price, config.biweekly_price, config.monthly_price)
-    }
-
-    // For multiple tickets with different numbers
     public entry fun purchase_tickets(
         buyer: &signer,
-        pot_type: u8,
         pot_id: String,
         ticket_count: u64,
         all_numbers: vector<vector<u8>>,
-    ) acquires LottoConfig {
+    ) {
         let buyer_address = signer::address_of(buyer);
-        let config = borrow_global<LottoConfig>(@lotto_addr);
         let now = timestamp::now_seconds();
-        let pot_price = get_ticket_price(config, pot_type);
+        
+        // Verify pot exists and get details
+        assert!(lotto_pots::exists_pot(pot_id), ERROR_POT_NOT_FOUND);
+        let pot_details = lotto_pots::get_pot_details(pot_id);
+        let pot_type = lotto_pots::get_pot_type(&pot_details);
+        let pot_price = lotto_pots::get_ticket_price(&pot_details);
+        
+        
         assert!(ticket_count == vector::length(&all_numbers), ERROR_INVALID_TICKET_COUNT);
-        // Validate pot_type and ticket count range before proceeding
-        assert!(pot_type <= 2, ERROR_INVALID_POT_TYPE);
+        assert!(pot_type <= 3, ERROR_INVALID_POT_TYPE); // Now checking against 3 pot types
         assert!(ticket_count > 0 && ticket_count <= 100, ERROR_INVALID_TICKET_COUNT);
+        
         // Validate input for each set of numbers
         let i = 0;
         while (i < ticket_count) {
@@ -104,10 +65,13 @@ module lotto_addr::lotto {
             i = i + 1;
         };
         
-        let amount = get_ticket_price(config, pot_type) * ticket_count;
+        let amount = pot_price * ticket_count;
         
-        // Process payment using USDT
-        let payment_success = process_payment(buyer, config.treasury_address, amount);
+        // Get the pot's store address
+        let pot_store_address = lotto_pots::get_pot_store_address(pot_id);
+        
+        // Process payment to the pot's store
+        let payment_success = process_payment(buyer, pot_store_address, amount);
         
         if (!payment_success) {
             emit_event(
@@ -128,14 +92,12 @@ module lotto_addr::lotto {
         // Record each ticket purchase
         let i = 0;
         while (i < ticket_count) {
-            let numbers = *vector::borrow(&all_numbers, i);
-            
             emit_event(
                 buyer_address,
                 pot_id,
                 pot_type,
                 pot_price,
-                numbers,
+                *vector::borrow(&all_numbers, i),
                 ticket_count,
                 amount,
                 true,
@@ -147,52 +109,43 @@ module lotto_addr::lotto {
         };
     }
 
-    // Validation functions
-    fun validate_purchase(pot_type: u8, ticket_count: u64, numbers: &vector<u8>): bool {
-        if (pot_type > 2) return false;
-        if (ticket_count == 0 || ticket_count > 100) return false;
-        if (!validate_numbers(numbers)) return false;
-        true
-    }
-    
     fun validate_numbers(numbers: &vector<u8>): bool {
         if (vector::length(numbers) != 6) return false;
         
         let i = 0;
         while (i < vector::length(numbers)) {
             let num = *vector::borrow(numbers, i);
-            if (num < 1 || num > 49) return false;
+            if (num < 1 || num > 69) return false;
             i = i + 1;
         };
         true
     }
 
-    fun process_payment(buyer: &signer, recipient: address, amount: u64): bool {
+    fun process_payment(buyer: &signer, pot_store_addr: address, amount: u64): bool {
         // Check if user has USDT store
-        let store_addr = primary_fungible_store::primary_store_address(signer::address_of(buyer), object::address_to_object<Metadata>(USDT_ASSET));
+        let buyer_address = signer::address_of(buyer);
+        let usdt_metadata = object::address_to_object<Metadata>(USDT_ASSET);
+        let store_addr = primary_fungible_store::primary_store_address(buyer_address, usdt_metadata);
+        
         if (!fungible_asset::store_exists(store_addr)) { 
             return false;
-        };
-        
-        
+        };      
         // Check balance
-        let balance = primary_fungible_store::balance(signer::address_of(buyer), object::address_to_object<Metadata>(USDT_ASSET));
+        let balance = primary_fungible_store::balance(buyer_address, usdt_metadata);
         if (balance < amount) {
             return false;
         };
 
-        primary_fungible_store::ensure_primary_store_exists(recipient, object::address_to_object<Metadata>(USDT_ASSET));
-
-
         // Withdraw USDT from buyer
         let usdt = primary_fungible_store::withdraw(
             buyer,
-            object::address_to_object<Metadata>(USDT_ASSET),
+            usdt_metadata,
             amount
         );
-        
-        // Deposit USDT to treasury
-        primary_fungible_store::deposit(recipient, usdt);
+         // 1. Get the pot's store address
+        let pot_store = object::address_to_object<FungibleStore>(pot_store_addr);
+        // Deposit USDT to the pot's store
+        dispatchable_fungible_asset::deposit(pot_store, usdt);
         true
     }
 
@@ -220,12 +173,5 @@ module lotto_addr::lotto {
             error_code,
             timestamp,
         });
-    }
-
-    fun get_ticket_price(config: &LottoConfig, pot_type: u8): u64 {
-        if (pot_type == 0) config.daily_price
-        else if (pot_type == 1) config.biweekly_price
-        else if (pot_type == 2) config.monthly_price
-        else 0
     }
 }

@@ -169,4 +169,7 @@ module klotto::lotto_pots {
         smart_table::contains(&pots.pots, pot_id)
     }
 
+    public fun get_pot_type(details: &PotDetailsView): u8 { details.pot_type }
+    public fun get_ticket_price(details: &PotDetailsView): u64 { details.ticket_price }
+
 }
