@@ -1,9 +1,8 @@
-module lotto_addr::klotto_randomness {
+module klotto::klotto_randomness {
     use std::error;
     use std::signer;
     use std::vector;
     use aptos_framework::event;
-    use aptos_framework::account;
     use aptos_framework::timestamp;
     use aptos_framework::randomness;
 

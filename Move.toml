@@ -4,8 +4,9 @@ version = "1.0.0"
 authors = []
 
 [addresses]
-lotto_addr = "0xad29653c9e24021afd32879585e427c155f2a70b0d05264474b330df4843997c"
-kanalabs = "0xad29653c9e24021afd32879585e427c155f2a70b0d05264474b330df4843997c"
+lotto_addr = "8e917e47581ccc66819b4d81177cf39a90e8c623d1bebeb7d96b3284d4fd516d"
+klotto = "8e917e47581ccc66819b4d81177cf39a90e8c623d1bebeb7d96b3284d4fd516d"
+kanalabs = "8e917e47581ccc66819b4d81177cf39a90e8c623d1bebeb7d96b3284d4fd516d"
 [dev-addresses]
 
 [dependencies.AptosFramework]
