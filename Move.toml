@@ -4,8 +4,7 @@ version = "1.0.0"
 authors = []
 
 [addresses]
-lotto_addr = "0x4119f3f9ba75b73e09b043497952ed1dd2d98477139e94b4a22d71d4a9996102"
-klotto = "0x4119f3f9ba75b73e09b043497952ed1dd2d98477139e94b4a22d71d4a9996102"
+klotto = "0x7de02816c8a2aaec386cf219f2e9149255550a67d81049615bf2c60297d02f9b"
 [dev-addresses]
 
 [dependencies.AptosFramework]
