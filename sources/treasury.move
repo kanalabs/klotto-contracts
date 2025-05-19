@@ -35,14 +35,6 @@ module klotto::treasury {
     }
 
     #[event]
-    struct EmergencyWithdrawal has drop, store {
-        admin: address,
-        recipient: address,
-        amount: u64,
-        timestamp: u64
-    }
-
-    #[event]
     struct FundsWithdrawn has drop, store {
         recipient: address,
         amount: u64,
@@ -140,6 +132,35 @@ module klotto::treasury {
         event::emit(FundsMovedToPot {
             admin: admin_addr,
             pot_id: copy pot_id,
+            amount,
+            timestamp: timestamp::now_seconds()
+        });
+    }
+
+    // ====== Withdrawal Function ======
+    public entry fun withdraw_funds(
+        admin: &signer,
+        recipient: &signer,
+        amount: u64
+    ) acquires Treasury {
+        let admin_addr = signer::address_of(admin);
+        assert!(admin_addr == @klotto, ENOT_ADMIN);
+
+        let treasury = borrow_global_mut<Treasury>(@klotto);
+        let recipient_addr = signer::address_of(recipient);
+        
+        // Corrected withdraw call with three parameters
+        let usdt = dispatchable_fungible_asset::withdraw(
+            admin,
+            treasury.vault,
+            amount
+        );
+        
+        // Deposit to recipient's primary store
+        primary_fungible_store::deposit(recipient_addr, usdt);
+
+        event::emit(FundsWithdrawn {
+            recipient: recipient_addr,
             amount,
             timestamp: timestamp::now_seconds()
         });
