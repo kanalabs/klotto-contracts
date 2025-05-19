@@ -10,7 +10,7 @@ module klotto::treasury {
     use aptos_framework::timestamp;
 
     // ====== Constants ======
-    const USDT_ASSET: address = @0xd5d0d561493ea2b9410f67da804653ae44e793c2423707d4f11edb2e38192050;
+    const USDT_ASSET: address = @usdt_asset;
     const ENOT_ADMIN: u64 = 1001;
     const EINSUFFICIENT_BALANCE: u64 = 1002;
     const EPOT_NOT_FOUND: u64 = 1003;

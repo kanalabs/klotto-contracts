@@ -5,6 +5,8 @@ authors = []
 
 [addresses]
 klotto = "0x7de02816c8a2aaec386cf219f2e9149255550a67d81049615bf2c60297d02f9b"
+usdt_asset = "0xd5d0d561493ea2b9410f67da804653ae44e793c2423707d4f11edb2e38192050"
+
 [dev-addresses]
 
 [dependencies.AptosFramework]

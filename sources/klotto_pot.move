@@ -13,7 +13,7 @@ module klotto::lotto_pots {
     use aptos_std::table::{Self, Table};
 
     // ====== USDT FA Address (Mainnet) ======
-    const USDT_ASSET: address = @0xd5d0d561493ea2b9410f67da804653ae44e793c2423707d4f11edb2e38192050;
+    const USDT_ASSET: address = @usdt_asset;
 
     // ====== Error Codes ======
     const ENOT_ADMIN: u64 = 1001;

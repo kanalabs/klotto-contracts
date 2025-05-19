@@ -11,7 +11,7 @@ module klotto::lotto {
     use klotto::lotto_pots;
 
     // USDT FA address
-    const USDT_ASSET: address = @0xd5d0d561493ea2b9410f67da804653ae44e793c2423707d4f11edb2e38192050;
+    const USDT_ASSET: address = @usdt_asset;
 
     // Error codes
     const ERROR_INVALID_AMOUNT: u64 = 1;
