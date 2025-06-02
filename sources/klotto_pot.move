@@ -1133,12 +1133,7 @@ module klotto::lotto_pots {
         let pot_address = get_pot_address(pot_id);
         let pot_details = borrow_global<PotDetails>(pot_address);
 
-        let count = 0;
-        pot_details.winners.for_each(|_winner_address, _prize_amount| {
-            count += 1;
-        });
-
-        count
+        pot_details.winners.keys().length()
     }
 
     // ====== View Functions ======
