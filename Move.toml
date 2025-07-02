@@ -4,8 +4,9 @@ version = "1.0.0"
 authors = []
 
 [addresses]
-klotto = "0x57223e26c7e487c9771f73e5305a64983e651fd395046e56a26679688bec5d4e"
+klotto = "0xc0d57e36cc0c47f8c638855f3e6197d028802f13d706cd1b15f68f91f290d9d4"
 usdt_asset = "0xd5d0d561493ea2b9410f67da804653ae44e793c2423707d4f11edb2e38192050"
+usdc_asset = "0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b"
 
 [dev-addresses]
 
