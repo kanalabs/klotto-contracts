@@ -1402,6 +1402,13 @@ module klotto::lotto_pots {
         }
     }
 
+    // Add this new view function to your Move contract
+    #[view]
+    public fun get_admin_claim_threshold(): u64 acquires Config {
+        assert!(exists<Config>(@klotto), 1020);
+        borrow_global<Config>(@klotto).admin_claim_threshold
+    }
+
 
     // Helper function to sort numbers
     fun sort_vector(v: &mut vector<u8>) {
