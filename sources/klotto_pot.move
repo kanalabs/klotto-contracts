@@ -11,7 +11,7 @@ module klotto::lotto_pots {
     use aptos_std::event;
     use aptos_std::randomness;
 
-    const USDT_ASSET: address = @usdt_asset;
+    const USDT_ASSET: address = @usdc_asset;
 
     // ====== Error Codes ======
     const ENOT_ADMIN: u64 = 1001;
@@ -1151,25 +1151,23 @@ module klotto::lotto_pots {
     // Withdraw funds from treasury
     public entry fun withdraw_funds_from_treasury_vault(
         admin: &signer,
-        recipient: &signer,
         amount: u64
     ) acquires Treasury {
         let admin_addr = signer::address_of(admin);
         assert!(admin_addr == @klotto, ENOT_ADMIN);
 
         let treasury = borrow_global_mut<Treasury>(@klotto);
-        let recipient_addr = signer::address_of(recipient);
 
-        let usdt = dispatchable_fungible_asset::withdraw(
-            admin, // Admin signs the withdrawal from the treasury (admin owns treasury)
+        let usdc = dispatchable_fungible_asset::withdraw(
+            admin,
             treasury.vault,
             amount
         );
 
-        primary_fungible_store::deposit(recipient_addr, usdt);
+        primary_fungible_store::deposit(admin_addr, usdc);
 
         event::emit(FundsWithdrawn {
-            recipient: recipient_addr,
+            recipient: admin_addr,
             amount,
             timestamp: timestamp::now_seconds(),
             success: true
