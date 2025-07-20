@@ -1018,8 +1018,7 @@ module klotto::lotto_pots {
         let pot_address = get_pot_address(pot_id);
         let pot_details = borrow_global_mut<PotDetails>(pot_address);
 
-        assert!(pot_details.status == STATUS_ACTIVE, EINVALID_STATUS);
-        pot_details.status = STATUS_CANCELLATION_IN_PROGRESS;
+        pot_details.status = STATUS_CANCELLED;
     }
 
     // Insert batch refunds for cancelled pot
@@ -1036,13 +1035,17 @@ module klotto::lotto_pots {
         let pot_address = get_pot_address(pot_id);
         let pot_details = borrow_global_mut<PotDetails>(pot_address);
 
-        assert!(pot_details.status == STATUS_CANCELLATION_IN_PROGRESS, EINVALID_STATUS);
+        assert!(
+            pot_details.status == STATUS_ACTIVE || pot_details.status == STATUS_PAUSED,
+            EINVALID_STATUS
+        );
 
         // Ensure lengths match
         assert!(refund_user_addresses.length() == refund_ticket_counts.length(), EINVALID_INPUT_LENGTH);
 
         let batch_size = refund_user_addresses.length();
         assert!(batch_size <= MAX_BATCH_SIZE, EBATCH_TOO_LARGE);
+        pot_details.status = STATUS_CANCELLATION_IN_PROGRESS;
 
         let total_refund_amount = 0;
         let emitted_refund_user_addresses = vector::empty<address>(); // For event
@@ -1075,9 +1078,7 @@ module klotto::lotto_pots {
             };
             i += 1;
         };
-
-        pot_details.status = STATUS_CANCELLED;
-
+        
         event::emit(BatchRefundsProcessedEvent {
             pot_id: copy pot_id,
             user_count: batch_size,
@@ -1355,6 +1356,42 @@ module klotto::lotto_pots {
             winning_numbers,
             store_address: pot_details.store_address
         }
+    }
+
+    #[view]
+    public fun get_all_pots_with_funds(): vector<PotDetailsView> acquires LottoPots, PotDetails {
+        if (!exists<LottoPots>(@klotto)) {
+            return vector::empty<PotDetailsView>()
+        };
+
+        let pots_registry = borrow_global<LottoPots>(@klotto);
+        let all_pot_ids = pots_registry.pots.keys();
+        let num_pots = all_pot_ids.length();
+
+        let all_pot_details_views = vector::empty<PotDetailsView>();
+        let i = 0;
+        while (i < num_pots) {
+            let pot_id = all_pot_ids[i];
+            let pot_address = get_pot_address(pot_id);
+            let pot_details = borrow_global<PotDetails>(pot_address);
+
+            let pot_details_view = PotDetailsView {
+                pot_address,
+                pot_id: copy pot_id,
+                pot_type: pot_details.pot_type,
+                pool_type: pot_details.pool_type,
+                prize_pool: fungible_asset::balance(pot_details.prize_store),
+                status: pot_details.status,
+                ticket_price: pot_details.ticket_price,
+                created_at: pot_details.created_at,
+                scheduled_draw_time: pot_details.scheduled_draw_time,
+                winning_numbers: pot_details.winning_numbers,
+                store_address: pot_details.store_address
+            };
+            all_pot_details_views.push_back(pot_details_view);
+            i += 1;
+        };
+        all_pot_details_views
     }
 
     #[view]
