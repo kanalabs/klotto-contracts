@@ -41,6 +41,7 @@ module klotto::lotto_pots {
     const EPOT_ALREADY_PAUSED: u64 = 1017;
     const EPOT_ALREADY_ACTIVE: u64 = 1018;
     const ECLAIM_NOT_ENABLED: u64 = 1019; // NEW ERROR CODE
+    const ECONFIG_NOT_INITIALIZED: u64 = 1020;
 
     // ====== Pot Types ======
     const POT_TYPE_DAILY: u8 = 1;
@@ -124,10 +125,13 @@ module klotto::lotto_pots {
         is_claimable: bool, // ADDED: New field for admin control
     }
 
+    #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
     struct Treasury has key {
-        vault: Object<FungibleStore>,
-        cashback: Object<FungibleStore>,
-        take_rate: Object<FungibleStore>,
+        extend_ref: ExtendRef, // For the Treasury object itself, used for cashback store signer
+        delete_ref: DeleteRef,
+        vault: Object<FungibleStore>, // Owned by @klotto
+        cashback: Object<FungibleStore>, // Owned by Treasury object itself
+        take_rate: Object<FungibleStore>, // Owned by @klotto
         vault_address: address,
         cashback_address: address,
         take_rate_address: address
@@ -336,29 +340,39 @@ module klotto::lotto_pots {
             );
         };
         if (!exists<Treasury>(@klotto)) {
-            // Create separate constructor refs for each store
-            let vault_constructor_ref = object::create_object(signer::address_of(admin));
+            // Create a constructor ref for the Treasury object itself (owned by admin)
+            let treasury_object_constructor_ref = object::create_object(admin_address);
+            let treasury_object_signer = object::generate_signer(&treasury_object_constructor_ref);
+            let treasury_object_address = signer::address_of(&treasury_object_signer);
+
+            // Create vault store: owned by admin_address (@klotto)
+            let vault_store_constructor_ref = object::create_object(admin_address);
             let vault = fungible_asset::create_store(
-                &vault_constructor_ref,
+                &vault_store_constructor_ref,
                 object::address_to_object<Metadata>(USDT_ASSET)
             );
             let vault_address = object::object_address(&vault);
 
-            let cashback_constructor_ref = object::create_object(signer::address_of(admin));
+            // Create cashback store: owned by the Treasury object itself
+            let cashback_store_constructor_ref = object::create_object(treasury_object_address);
             let cashback = fungible_asset::create_store(
-                &cashback_constructor_ref,
+                &cashback_store_constructor_ref,
                 object::address_to_object<Metadata>(USDT_ASSET)
             );
             let cashback_address = object::object_address(&cashback);
 
-            let take_rate_constructor_ref = object::create_object(signer::address_of(admin));
+            // Create take_rate store: owned by admin_address (@klotto)
+            let take_rate_store_constructor_ref = object::create_object(admin_address);
             let take_rate = fungible_asset::create_store(
-                &take_rate_constructor_ref,
+                &take_rate_store_constructor_ref,
                 object::address_to_object<Metadata>(USDT_ASSET)
             );
             let take_rate_address = object::object_address(&take_rate);
 
-            move_to(admin, Treasury {
+            // Move Treasury resource to the Treasury object's address
+            move_to(&treasury_object_signer, Treasury {
+                extend_ref: object::generate_extend_ref(&treasury_object_constructor_ref),
+                delete_ref: object::generate_delete_ref(&treasury_object_constructor_ref),
                 vault,
                 cashback,
                 take_rate,
@@ -912,12 +926,14 @@ module klotto::lotto_pots {
         assert!(admin_addr == @klotto, ENOT_ADMIN);
         assert!(amount > 0, EINVALID_AMOUNT);
 
-        let treasury = borrow_global_mut<Treasury>(@klotto);
+        let treasury = borrow_global<Treasury>(@klotto);
+        let treasury_signer = object::generate_signer_for_extending(&treasury.extend_ref);
+
         let cashback_balance = fungible_asset::balance(treasury.cashback);
         assert!(cashback_balance >= amount, EINSUFFICIENT_BALANCE);
 
         let usdt = dispatchable_fungible_asset::withdraw(
-            admin,
+            &treasury_signer, // Treasury object signs the withdrawal from its cashback store
             treasury.cashback,
             amount
         );
@@ -976,31 +992,35 @@ module klotto::lotto_pots {
     // Transfer cashback funds to a specific wallet address (admin only)
     public entry fun transfer_cashback_to_wallet(
         admin: &signer,
-        recipient: address,
+        recipient: &signer,
         amount: u64
     ) acquires Treasury {
         let admin_addr = signer::address_of(admin);
+        let recipient_addr = signer::address_of(recipient); // Get recipient's address from their signer
+
         assert!(admin_addr == @klotto, ENOT_ADMIN);
         assert!(amount > 0, EINVALID_AMOUNT);
 
-        let treasury = borrow_global_mut<Treasury>(@klotto);
+        let treasury = borrow_global<Treasury>(@klotto);
+        let treasury_signer = object::generate_signer_for_extending(&treasury.extend_ref);
+
         let cashback_balance = fungible_asset::balance(treasury.cashback);
         assert!(cashback_balance >= amount, EINSUFFICIENT_BALANCE);
 
         let usdt = dispatchable_fungible_asset::withdraw(
-            admin, // Admin signs the withdrawal from the treasury cashback (admin owns treasury)
+            &treasury_signer, // Treasury object signs the withdrawal from its cashback
             treasury.cashback,
             amount
         );
 
         let recipient_store = primary_fungible_store::ensure_primary_store_exists(
-            recipient,
+            recipient_addr,
             object::address_to_object<Metadata>(USDT_ASSET)
         );
         dispatchable_fungible_asset::deposit(recipient_store, usdt);
 
         event::emit(FundsWithdrawn {
-            recipient,
+            recipient: recipient_addr,
             amount,
             timestamp: timestamp::now_seconds(),
             success: true
@@ -1440,7 +1460,7 @@ module klotto::lotto_pots {
     // Add this new view function to your Move contract
     #[view]
     public fun get_admin_claim_threshold(): u64 acquires Config {
-        assert!(exists<Config>(@klotto), 1020);
+        assert!(exists<Config>(@klotto), ECONFIG_NOT_INITIALIZED);
         borrow_global<Config>(@klotto).admin_claim_threshold
     }
 
