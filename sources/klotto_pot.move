@@ -11,8 +11,6 @@ module klotto::lotto_pots {
     use aptos_std::event;
     use aptos_std::randomness;
 
-    const USDT_ASSET: address = @usdc_asset;
-
     // ====== Error Codes ======
     const ENOT_ADMIN: u64 = 1001;
     const EINVALID_STATUS: u64 = 1002;
@@ -66,14 +64,15 @@ module klotto::lotto_pots {
     const POWERBALL_MAX: u8 = 26;
     const MAX_BATCH_SIZE: u64 = 100;
 
+    const USDC_ASSET: address = @usdc_asset;
+    const INITIAL_CLAIM_THRESHOLD: u64 = 10000;
+
     // Main registry of pot object addresses
     struct LottoPots has key {
-        pots: BigOrderedMap<String, address>
-    }
-    
-    // New Config struct for updatable threshold
-    struct Config has key {
+        pots: BigOrderedMap<String, address>,
         admin_claim_threshold: u64,
+        admin: address,
+        pending_admin: address
     }
 
     #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
@@ -312,49 +311,42 @@ module klotto::lotto_pots {
     }
 
     // Initialize the module, acting as a constructor
-    public entry fun initialize(admin: &signer, initial_claim_threshold: u64) {
+    fun init_module(admin: &signer) {
         let admin_address = signer::address_of(admin);
         assert!(admin_address == @klotto, ENOT_ADMIN);
 
         // Initialize LottoPots if it doesn't exist
         if (!exists<LottoPots>(@klotto)) {
-            move_to(
-                admin,
+            move_to(admin,
                 LottoPots {
-                    pots: big_ordered_map::new_with_config(128, 1024, true)
+                    pots: big_ordered_map::new_with_reusable(),
+                    admin_claim_threshold: INITIAL_CLAIM_THRESHOLD,
+                    admin: admin_address,
+                    pending_admin: @0x0
                 }
             );
         };
-        
-        // Initialize Config if it doesn't exist
-        if (!exists<Config>(@klotto)) {
-            move_to(
-                admin,
-                Config {
-                    admin_claim_threshold: initial_claim_threshold
-                }
-            );
-        };
+
         if (!exists<Treasury>(@klotto)) {
             // Create separate constructor refs for each store
-            let vault_constructor_ref = object::create_object(signer::address_of(admin));
+            let vault_constructor_ref = object::create_object(admin_address);
             let vault = fungible_asset::create_store(
                 &vault_constructor_ref,
-                object::address_to_object<Metadata>(USDT_ASSET)
+                object::address_to_object<Metadata>(USDC_ASSET)
             );
             let vault_address = object::object_address(&vault);
 
-            let cashback_constructor_ref = object::create_object(signer::address_of(admin));
+            let cashback_constructor_ref = object::create_object(admin_address);
             let cashback = fungible_asset::create_store(
                 &cashback_constructor_ref,
-                object::address_to_object<Metadata>(USDT_ASSET)
+                object::address_to_object<Metadata>(USDC_ASSET)
             );
             let cashback_address = object::object_address(&cashback);
 
-            let take_rate_constructor_ref = object::create_object(signer::address_of(admin));
+            let take_rate_constructor_ref = object::create_object(admin_address);
             let take_rate = fungible_asset::create_store(
                 &take_rate_constructor_ref,
-                object::address_to_object<Metadata>(USDT_ASSET)
+                object::address_to_object<Metadata>(USDC_ASSET)
             );
             let take_rate_address = object::object_address(&take_rate);
 
@@ -373,11 +365,11 @@ module klotto::lotto_pots {
     public entry fun update_admin_claim_threshold(
         admin: &signer,
         new_threshold: u64
-    ) acquires Config {
+    ) acquires LottoPots {
         let admin_address = signer::address_of(admin);
         assert!(admin_address == @klotto, ENOT_ADMIN);
 
-        let config = borrow_global_mut<Config>(@klotto);
+        let config = borrow_global_mut<LottoPots>(@klotto);
         let old_threshold = config.admin_claim_threshold;
         
         config.admin_claim_threshold = new_threshold;
@@ -417,7 +409,7 @@ module klotto::lotto_pots {
         let constructor_ref = object::create_object(admin_address);
         let pot_signer = object::generate_signer(&constructor_ref);
         let pot_address = signer::address_of(&pot_signer);
-        let metadata = object::address_to_object<Metadata>(USDT_ASSET);
+        let metadata = object::address_to_object<Metadata>(USDC_ASSET);
         let prize_store = fungible_asset::create_store(&constructor_ref, metadata);
         let store_address = object::object_address(&prize_store);
 
@@ -436,8 +428,8 @@ module klotto::lotto_pots {
             prize_store,
             store_address,
             prize_asset: metadata,
-            winners: big_ordered_map::new_with_config(128, 1024, true),
-            refunds: big_ordered_map::new_with_config(128, 1024, true),
+            winners: big_ordered_map::new_with_reusable(),
+            refunds: big_ordered_map::new_with_reusable(),
             winning_numbers: vector::empty(),
             cancellation_total: 0
         };
@@ -487,31 +479,14 @@ module klotto::lotto_pots {
         let amount = pot_details.ticket_price * ticket_count;
 
         // Process payment to the pot's store
-        let payment_success = process_payment(buyer, object::object_address(&pot_details.prize_store), amount);
-
-        if (!payment_success) {
-            emit_event(
-                buyer_address,
-                pot_id,
-                pot_details.pot_type,
-                pot_details.ticket_price,
-                vector::empty<u8>(),
-                ticket_count,
-                amount,
-                false,
-                ETRANSFER_FAILED,
-                now,
-                pot_address
-            );
-            return;
-        };
+        process_payment(buyer, object::object_address(&pot_details.prize_store), amount);
 
         // Record each ticket purchase
         let i = 0;
         while (i < ticket_count) {
             emit_event(
                 buyer_address,
-                copy pot_id,
+                pot_id,
                 pot_details.pot_type,
                 pot_details.ticket_price,
                 all_numbers[i],
@@ -547,29 +522,17 @@ module klotto::lotto_pots {
     }
 
     // Process payment for tickets
-    fun process_payment(buyer: &signer, pot_store_addr: address, amount: u64): bool {
-        let buyer_address = signer::address_of(buyer);
-        let usdt_metadata = object::address_to_object<Metadata>(USDT_ASSET);
-        let store_addr = primary_fungible_store::primary_store_address(buyer_address, usdt_metadata);
+    fun process_payment(buyer: &signer, pot_store_addr: address, amount: u64) {
+        let usdt_metadata = object::address_to_object<Metadata>(USDC_ASSET);
 
-        if (!fungible_asset::store_exists(store_addr)) {
-            return false;
-        };
-
-        let balance = primary_fungible_store::balance(buyer_address, usdt_metadata);
-        if (balance < amount) {
-            return false;
-        };
-
-        let usdt = primary_fungible_store::withdraw(
+        let asset = primary_fungible_store::withdraw(
             buyer,
             usdt_metadata,
             amount
         );
 
         let pot_store = object::address_to_object<FungibleStore>(pot_store_addr);
-        dispatchable_fungible_asset::deposit(pot_store, usdt);
-        true
+        dispatchable_fungible_asset::deposit(pot_store, asset);
     }
 
     // Emit ticket purchase event
@@ -642,8 +605,8 @@ module klotto::lotto_pots {
         event::emit(
             PotDrawnEvent {
                 pot_id: copy pot_id,
-                draw_time: timestamp::now_seconds(),
-                winning_numbers: pot_details.winning_numbers,
+                draw_time: current_time,
+                winning_numbers: white_balls,
                 pot_address,
                 success: true
             }
@@ -658,7 +621,7 @@ module klotto::lotto_pots {
         pot_id: String,
         winner_addresses: vector<address>,
         prize_amounts: vector<u64>,
-    ) acquires LottoPots, PotDetails, Config { // Added Config
+    ) acquires LottoPots, PotDetails { // Added Config
         let admin_address = signer::address_of(admin);
         assert!(admin_address == @klotto, ENOT_ADMIN);
 
@@ -669,14 +632,13 @@ module klotto::lotto_pots {
         let pot_balance = fungible_asset::balance(pot_details.prize_store);
         assert!(pot_details.status == STATUS_DRAWN, EINVALID_STATUS);
 
-        // Ensure lengths match
-        assert!(winner_addresses.length() == prize_amounts.length(), EINVALID_INPUT_LENGTH);
-        
-        // Get the claim threshold from Config
-        let config = borrow_global<Config>(@klotto);
-        let admin_claim_threshold = config.admin_claim_threshold;
-
         let winner_count = winner_addresses.length();
+        // Ensure lengths match
+        assert!(winner_count == prize_amounts.length(), EINVALID_INPUT_LENGTH);
+
+        // Get the claim threshold from Config
+        let admin_claim_threshold = get_admin_claim_threshold();
+
         let total_prize = 0;
         let i = 0;
         while (i < winner_count) {
@@ -692,10 +654,10 @@ module klotto::lotto_pots {
                 is_claimable: is_claimable_initially // Initialize based on threshold
             });
             total_prize += prize_amount;
+            assert!(total_prize <= pot_balance, EINSUFFICIENT_BALANCE);
 
             i += 1;
         };
-        assert!(total_prize <= pot_balance, EINSUFFICIENT_BALANCE);
 
         event::emit(
             WinnersAnnouncedEvent {
@@ -800,6 +762,7 @@ module klotto::lotto_pots {
             }
         );
     }
+
     // Move specified funds from pot to treasury vault
     public entry fun transfer_pot_fund_to_treasury_vault(
         admin: &signer,
@@ -885,7 +848,7 @@ module klotto::lotto_pots {
 
         let store_addr = primary_fungible_store::primary_store_address(
             admin_addr,
-            object::address_to_object<Metadata>(USDT_ASSET)
+            object::address_to_object<Metadata>(USDC_ASSET)
         );
         assert!(fungible_asset::store_exists(store_addr), ENO_STORE);
 
@@ -924,7 +887,7 @@ module klotto::lotto_pots {
 
         let admin_store = primary_fungible_store::ensure_primary_store_exists(
             admin_addr,
-            object::address_to_object<Metadata>(USDT_ASSET)
+            object::address_to_object<Metadata>(USDC_ASSET)
         );
         dispatchable_fungible_asset::deposit(admin_store, usdt);
 
@@ -995,7 +958,7 @@ module klotto::lotto_pots {
 
         let recipient_store = primary_fungible_store::ensure_primary_store_exists(
             recipient,
-            object::address_to_object<Metadata>(USDT_ASSET)
+            object::address_to_object<Metadata>(USDC_ASSET)
         );
         dispatchable_fungible_asset::deposit(recipient_store, usdt);
 
@@ -1103,7 +1066,7 @@ module klotto::lotto_pots {
 
         let store_addr = primary_fungible_store::primary_store_address(
             user_addr,
-            object::address_to_object<Metadata>(USDT_ASSET)
+            object::address_to_object<Metadata>(USDC_ASSET)
         );
         assert!(fungible_asset::store_exists(store_addr), ENO_STORE);
 
@@ -1196,7 +1159,7 @@ module klotto::lotto_pots {
 
         let recipient_store = primary_fungible_store::ensure_primary_store_exists(
             recipient,
-            object::address_to_object<Metadata>(USDT_ASSET)
+            object::address_to_object<Metadata>(USDC_ASSET)
         );
         dispatchable_fungible_asset::deposit(recipient_store, usdt);
 
@@ -1416,11 +1379,6 @@ module klotto::lotto_pots {
     }
 
     #[view]
-    public fun get_balance(): u64 acquires Treasury {
-        fungible_asset::balance(borrow_global<Treasury>(@klotto).vault)
-    }
-
-    #[view]
     public fun get_treasury_details(): TreasuryView acquires Treasury {
         let treasury = borrow_global<Treasury>(@klotto);
 
@@ -1439,9 +1397,16 @@ module klotto::lotto_pots {
 
     // Add this new view function to your Move contract
     #[view]
-    public fun get_admin_claim_threshold(): u64 acquires Config {
-        assert!(exists<Config>(@klotto), 1020);
-        borrow_global<Config>(@klotto).admin_claim_threshold
+    public fun get_admin_claim_threshold(): u64 acquires LottoPots {
+        assert!(exists<LottoPots>(@klotto), 1020);
+        borrow_global<LottoPots>(@klotto).admin_claim_threshold
+    }
+
+    // Add this new view function to your Move contract
+    #[view]
+    public fun get_admin(): address acquires LottoPots {
+        assert!(exists<LottoPots>(@klotto), 1020);
+        borrow_global<LottoPots>(@klotto).admin
     }
 
 
