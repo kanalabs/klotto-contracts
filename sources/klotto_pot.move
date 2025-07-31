@@ -1,7 +1,6 @@
 module klotto::lotto_pots {
     use std::string::{String};
     use std::signer;
-    use std::string;
     use std::vector;
     use aptos_std::big_ordered_map::{Self, BigOrderedMap};
     use aptos_framework::fungible_asset::{Self, FungibleStore, Metadata};
