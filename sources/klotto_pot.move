@@ -14,34 +14,51 @@ module klotto::lotto_pots {
 
 
     // ====== Error Codes ======
+    /// Sender is not an authorized admin or super admin.
     const ENOT_ADMIN: u64 = 1001;
+    /// Sender is not the super admin.
     const ENOT_SUPER_ADMIN: u64 = 1002;
+    /// Invalid status for the requested operation.
     const EINVALID_STATUS: u64 = 1003;
+    /// A pot with the given ID already exists.
     const EPOT_ALREADY_EXISTS: u64 = 1004;
+    /// The specified pot was not found.
     const EPOT_NOT_FOUND: u64 = 1005;
+    /// The pot has already been drawn.
     const EPOT_ALREADY_DRAWN: u64 = 1006;
+    /// The scheduled draw time for the pot has not yet been reached.
     const EDRAW_TIME_NOT_REACHED: u64 = 1007;
+    /// The address is not a winner for this pot.
     const ENOT_WINNER: u64 = 1008;
+    /// Prize has already been claimed.
     const EALREADY_CLAIMED: u64 = 1009;
+    /// No prize amount available for claiming.
     const ENO_PRIZE_AMOUNT: u64 = 1010;
-    const ENOT_AUTHORIZED: u64 = 1011;
-    const ENO_CANCELLATION_AMOUNT: u64 = 1012;
+    /// Invalid input vector length (e.g., ticket count mismatch with numbers provided).
     const EINVALID_INPUT_LENGTH: u64 = 1013;
+    /// Batch size exceeds the maximum allowed.
     const EBATCH_TOO_LARGE: u64 = 1014;
-    const ENO_CANCELLATIONS: u64 = 1015;
+    /// Invalid number of tickets provided for purchase or refund.
     const EINVALID_TICKET_COUNT: u64 = 1016;
-    const ETRANSFER_FAILED: u64 = 1017;
+    /// Funds transfer failed.
+    const ETRANSFER_FAILED: u64 = 1017; // This error is currently unused, but keeping as it's a generic transfer error
+    /// Invalid pot type specified.
     const EINVALID_POT_TYPE: u64 = 1018;
+    /// Invalid lottery numbers (e.g., out of range, duplicates for white balls).
     const EINVALID_NUMBERS: u64 = 1019;
+    /// Insufficient balance for the requested operation.
     const EINSUFFICIENT_BALANCE: u64 = 1020;
+    /// The pot is not in an active state.
     const EPOT_NOT_ACTIVE: u64 = 1021;
+    /// Invalid amount specified (e.g., zero or negative where positive is required).
     const EINVALID_AMOUNT: u64 = 1022;
+    /// Fungible store not found for the given address.
     const ENO_STORE: u64 = 1023;
+    /// Pot is not in a paused state.
     const EPOT_NOT_PAUSED: u64 = 1024;
-    // For unfreeze validation
-    const EPOT_ALREADY_PAUSED: u64 = 1025;
-    const EPOT_ALREADY_ACTIVE: u64 = 1026;
+    /// Prize claim is not enabled for this winner yet.
     const ECLAIM_NOT_ENABLED: u64 = 1027;
+    /// LottoRegistry configuration has not been initialized.
     const ECONFIG_NOT_INITIALIZED: u64 = 1028;
 
     // ====== Pot Types ======
@@ -69,11 +86,14 @@ module klotto::lotto_pots {
     const MAX_BATCH_SIZE: u64 = 1000;
     const INITIAL_CLAIM_THRESHOLD: u64 = 10000000;
 
-    const CASHBACK_WITHDRAWAL_NOTE: vector<u8> = b"cashback withdrawal";
-    const TREASURY_VAULT_WITHDRAWAL_NOTE: vector<u8> = b"treasury vault withdrawal";
-    const TAKE_RATE_WITHDRAWAL_NOTE: vector<u8> = b"take rate withdrawal";
-
     const USDC_ASSET: address = @usdc_asset;
+    const LOTTO_SYMBOL: vector<u8> = b"KACHING";
+
+    enum WithdrawalNoteType has copy, drop, store {
+        Cashback,
+        TreasuryVault,
+        TakeRate,
+    }
 
     // Main registry of pot object addresses
     struct LottoRegistry has key {
@@ -81,6 +101,14 @@ module klotto::lotto_pots {
         winning_claim_threshold: u64,
         super_admin: address,
         admin: address,
+        vault: Object<FungibleStore>,
+        cashback: Object<FungibleStore>,
+        take_rate: Object<FungibleStore>,
+        vault_address: address,
+        cashback_address: address,
+        take_rate_address: address,
+        extend_ref: ExtendRef,
+        delete_ref: DeleteRef,
     }
 
     #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
@@ -125,17 +153,7 @@ module klotto::lotto_pots {
         is_claimable: bool,
     }
 
-    #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
-    struct Treasury has key {
-        extend_ref: ExtendRef,
-        delete_ref: DeleteRef,
-        vault: Object<FungibleStore>,
-        cashback: Object<FungibleStore>,
-        take_rate: Object<FungibleStore>,
-        vault_address: address,
-        cashback_address: address,
-        take_rate_address: address
-    }
+
 
     #[view]
     struct PotDetailsView has copy, drop, store {
@@ -239,7 +257,7 @@ module klotto::lotto_pots {
     }
 
     #[event]
-    struct PrizeClaimableStatusUpdatedEvent has drop, store { // NEW EVENT
+    struct PrizeClaimableStatusUpdatedEvent has drop, store {
         pot_id: String,
         winner_address: address,
         new_status: bool,
@@ -292,7 +310,7 @@ module klotto::lotto_pots {
     #[event]
     struct FundsWithdrawn has drop, store {
         recipient: address,
-        note: String,
+        note_type: WithdrawalNoteType,
         amount: u64,
         timestamp: u64,
         success: bool
@@ -323,7 +341,7 @@ module klotto::lotto_pots {
     }
 
     #[event]
-    struct BatchWinnersProcessedEvent has drop, store { // NEW EVENT
+    struct BatchWinnersProcessedEvent has drop, store {
         pot_id: String,
         winner_count: u64,
         total_prize_amount_announced: u64,
@@ -337,78 +355,65 @@ module klotto::lotto_pots {
     // Initialize the module, acting as a constructor
     fun init_module(deployer: &signer) {
         let deployer_address = signer::address_of(deployer);
-        assert!(deployer_address == @klotto, ENOT_SUPER_ADMIN); // Only @klotto can deploy
+        assert!(deployer_address == @klotto, ENOT_SUPER_ADMIN);
+        let registry_constructor_ref = &object::create_named_object(deployer, LOTTO_SYMBOL);
+        let registry_object_signer = &object::generate_signer(registry_constructor_ref);
+        let registry_object_address = signer::address_of(registry_object_signer);
 
-        // Initialize LottoRegistry if it doesn't exist
-        if (!exists<LottoRegistry>(@klotto)) {
-            move_to(deployer,
+        let usdt_metadata = get_asset_metadata();
+
+        let vault_store_constructor_ref = object::create_object(registry_object_address);
+        let vault = fungible_asset::create_store(
+                &vault_store_constructor_ref,
+                usdt_metadata
+        );
+        let vault_address = object::object_address(&vault);
+
+        let cashback_store_constructor_ref = object::create_object(registry_object_address);
+        let cashback = fungible_asset::create_store(
+                &cashback_store_constructor_ref,
+                usdt_metadata
+        );
+        let cashback_address = object::object_address(&cashback);
+
+        let take_rate_store_constructor_ref = object::create_object(registry_object_address);
+        let take_rate = fungible_asset::create_store(
+                &take_rate_store_constructor_ref,
+                usdt_metadata
+        );
+        let take_rate_address = object::object_address(&take_rate);
+
+        move_to(registry_object_signer,
                 LottoRegistry {
                     pots: big_ordered_map::new_with_reusable(),
                     winning_claim_threshold: INITIAL_CLAIM_THRESHOLD,
                     super_admin: deployer_address, // @klotto is the super admin
                     admin: deployer_address,       // Initial admin is also @klotto
+                    vault,
+                    cashback,
+                    take_rate,
+                    vault_address,
+                    cashback_address,
+                    take_rate_address,
+                    extend_ref: object::generate_extend_ref(registry_constructor_ref),
+                    delete_ref: object::generate_delete_ref(registry_constructor_ref),
                 }
-            );
-        };
-
-        if (!exists<Treasury>(@klotto)) {
-            // Create a constructor ref for the Treasury object itself (owned by admin)
-            let treasury_object_constructor_ref = object::create_object(deployer_address);
-            let treasury_object_signer = object::generate_signer(&treasury_object_constructor_ref);
-            let treasury_object_address = signer::address_of(&treasury_object_signer);
-
-            let usdt_metadata = get_asset_metadata();
-
-            // Create vault store: owned by admin_address (@klotto)
-            let vault_store_constructor_ref = object::create_object(treasury_object_address);
-            let vault = fungible_asset::create_store(
-                &vault_store_constructor_ref,
-                usdt_metadata
-            );
-            let vault_address = object::object_address(&vault);
-
-            // Create cashback store: owned by the Treasury object itself
-            let cashback_store_constructor_ref = object::create_object(treasury_object_address);
-            let cashback = fungible_asset::create_store(
-                &cashback_store_constructor_ref,
-                usdt_metadata
-            );
-            let cashback_address = object::object_address(&cashback);
-
-            // Create take_rate store: owned by admin_address (@klotto)
-            let take_rate_store_constructor_ref = object::create_object(treasury_object_address);
-            let take_rate = fungible_asset::create_store(
-                &take_rate_store_constructor_ref,
-                usdt_metadata
-            );
-            let take_rate_address = object::object_address(&take_rate);
-
-            // Move Treasury resource to the Treasury object's address
-            move_to(&treasury_object_signer, Treasury {
-                extend_ref: object::generate_extend_ref(&treasury_object_constructor_ref),
-                delete_ref: object::generate_delete_ref(&treasury_object_constructor_ref),
-                vault,
-                cashback,
-                take_rate,
-                vault_address,
-                cashback_address,
-                take_rate_address
-            });
-        }
+        );
+        
     }
 
     // Helper function to validate if the signer is the current admin
     fun assert_is_admin(account: &signer) acquires LottoRegistry {
-        assert!(exists<LottoRegistry>(@klotto), ECONFIG_NOT_INITIALIZED);
-        let config = borrow_global<LottoRegistry>(@klotto);
+        let registry_addr = lotto_address();
+        let config = borrow_global<LottoRegistry>(registry_addr);
         let addr = signer::address_of(account);
         assert!(addr == config.admin || addr == config.super_admin, ENOT_ADMIN);
     }
 
     // Helper function to validate if the signer is the super admin
     fun assert_is_super_admin(account: &signer) acquires LottoRegistry {
-        assert!(exists<LottoRegistry>(@klotto), ECONFIG_NOT_INITIALIZED);
-        let config = borrow_global<LottoRegistry>(@klotto);
+        let registry_addr = lotto_address();
+        let config = borrow_global<LottoRegistry>(registry_addr);
         assert!(signer::address_of(account) == config.super_admin, ENOT_SUPER_ADMIN);
     }
 
@@ -419,7 +424,8 @@ module klotto::lotto_pots {
     ) acquires LottoRegistry {
         assert_is_super_admin(super_admin_signer);
 
-        let config = borrow_global_mut<LottoRegistry>(@klotto);
+        let registry_addr = lotto_address();
+        let config = borrow_global_mut<LottoRegistry>(registry_addr);
         let old_admin = config.admin;
         config.admin = new_admin_address;
 
@@ -438,8 +444,8 @@ module klotto::lotto_pots {
     ) acquires LottoRegistry {
         let admin_address = signer::address_of(admin);
         assert_is_admin(admin);
-
-        let config = borrow_global_mut<LottoRegistry>(@klotto);
+        let registry_addr = lotto_address();
+        let config = borrow_global_mut<LottoRegistry>(registry_addr);
         let old_threshold = config.winning_claim_threshold;
         
         config.winning_claim_threshold = new_threshold;
@@ -469,10 +475,10 @@ module klotto::lotto_pots {
                 pot_type == POT_TYPE_MONTHLY,
             EINVALID_STATUS
         );
-
+        let registry_addr = lotto_address();
         // Check pot existence and get registry
-        let pots = borrow_global_mut<LottoRegistry>(@klotto);
-        assert!(!pots.pots.contains(&pot_id), EPOT_ALREADY_EXISTS);
+        let pots_registry = borrow_global_mut<LottoRegistry>(registry_addr);
+        assert!(!pots_registry.pots.contains(&pot_id), EPOT_ALREADY_EXISTS);
 
         // Set up pot object and store
         let constructor_ref = object::create_object(admin_address);
@@ -505,7 +511,7 @@ module klotto::lotto_pots {
         move_to(&pot_signer, pot_details);
 
         // Register pot and emit event
-        pots.pots.add(copy pot_id, pot_address);
+        pots_registry.pots.add(copy pot_id, pot_address);
         event::emit(PotCreatedEvent {
             pot_id,
             pot_type,
@@ -768,30 +774,7 @@ module klotto::lotto_pots {
             pot_details.status == STATUS_WINNER_ANNOUNCEMENT_IN_PROGRESS,
             EINVALID_STATUS
         );
-
-        pot_details.status = STATUS_COMPLETED;
-        let winner_addresses_summary = pot_details.winners.keys();
-        let prize_amounts_summary = vector::empty<u64>();
-        let total_prize_summary = 0;
-        let i = 0;
-        while (i < winner_addresses_summary.length()) {
-            let winner_addr = winner_addresses_summary[i];
-            let claim_details = pot_details.winners.borrow(&winner_addr);
-            prize_amounts_summary.push_back(claim_details.amount);
-            total_prize_summary += claim_details.amount;
-            i += 1;
-        };
-
-        event::emit(
-            WinnersAnnouncedEvent {
-                pot_id: copy pot_id,
-                pot_address,
-                success: true,
-                winner_addresses: winner_addresses_summary,
-                prize_amounts: prize_amounts_summary,
-                total_prize: total_prize_summary
-            }
-        );
+        pot_details.status = STATUS_COMPLETED;   
     }
 
     // NEW ENTRY FUNCTION: Admin can update the claimable status for a specific winner
@@ -889,7 +872,7 @@ module klotto::lotto_pots {
         admin: &signer,
         pot_id: String,
         amount: u64
-    ) acquires LottoRegistry, PotDetails, Treasury {
+    ) acquires LottoRegistry, PotDetails {
         assert_is_admin(admin);
 
         assert!(exists_pot(pot_id), EPOT_NOT_FOUND);
@@ -901,9 +884,9 @@ module klotto::lotto_pots {
         let current_pot_balance = fungible_asset::balance(pot_details.prize_store);
         // Assert that the specified 'amount' does not exceed the current pot balance
         assert!(amount <= current_pot_balance, EINSUFFICIENT_BALANCE);
-
-        let treasury_resource = borrow_global_mut<Treasury>(@klotto);
-        let treasury_vault_store = treasury_resource.vault;
+        let registry_addr = lotto_address();
+        let registry = borrow_global_mut<LottoRegistry>(registry_addr);
+        let treasury_vault_store = registry.vault;
 
         // Use the pot's signer to withdraw funds
         let pot_signer = object::generate_signer_for_extending(&pot_details.extend_ref);
@@ -924,7 +907,7 @@ module klotto::lotto_pots {
     public entry fun move_remaining_to_treasury_vault(
         admin: &signer,
         pot_id: String,
-    ) acquires LottoRegistry, PotDetails, Treasury {
+    ) acquires LottoRegistry, PotDetails {
         assert_is_admin(admin);
 
         assert!(exists_pot(pot_id), EPOT_NOT_FOUND);
@@ -935,9 +918,9 @@ module klotto::lotto_pots {
 
         let remaining_balance = fungible_asset::balance(pot_details.prize_store);
         assert!(remaining_balance > 0, ENO_PRIZE_AMOUNT);
-
-        let treasury_resource = borrow_global_mut<Treasury>(@klotto);
-        let treasury_vault_store = treasury_resource.vault;
+        let registry_addr = lotto_address();
+        let registry = borrow_global_mut<LottoRegistry>(registry_addr);
+        let treasury_vault_store = registry.vault;
 
         // Use the pot's signer to withdraw funds
         let pot_signer = object::generate_signer_for_extending(&pot_details.extend_ref);
@@ -958,12 +941,12 @@ module klotto::lotto_pots {
     public entry fun add_funds_to_cashback(
         admin: &signer,
         amount: u64
-    ) acquires Treasury, LottoRegistry {
+    ) acquires LottoRegistry {
         let admin_addr = signer::address_of(admin);
         assert_is_admin(admin);
         assert!(amount > 0, EINVALID_AMOUNT);
-
-        let treasury = borrow_global_mut<Treasury>(@klotto);
+        let registry_addr = lotto_address();
+        let registry = borrow_global_mut<LottoRegistry>(registry_addr);
 
         let store_addr = primary_fungible_store::primary_store_address(
             admin_addr,
@@ -974,12 +957,12 @@ module klotto::lotto_pots {
         let admin_store = object::address_to_object<FungibleStore>(store_addr);
         let usdt = dispatchable_fungible_asset::withdraw(admin, admin_store, amount);
 
-        dispatchable_fungible_asset::deposit(treasury.cashback, usdt);
+        dispatchable_fungible_asset::deposit(registry.cashback, usdt);
 
         event::emit(FundsAdded {
             depositor: admin_addr,
             amount,
-            new_balance: fungible_asset::balance(treasury.cashback),
+            new_balance: fungible_asset::balance(registry.cashback),
             timestamp: timestamp::now_seconds(),
             success: true
         });
@@ -989,20 +972,20 @@ module klotto::lotto_pots {
     public entry fun withdraw_from_cashback(
         admin: &signer,
         amount: u64
-    ) acquires Treasury, LottoRegistry {
+    ) acquires LottoRegistry {
         let admin_addr = signer::address_of(admin);
         assert_is_super_admin(admin);
         assert!(amount > 0, EINVALID_AMOUNT);
+        let registry_addr = lotto_address();
+        let registry = borrow_global<LottoRegistry>(registry_addr);
+        let registry_signer = object::generate_signer_for_extending(&registry.extend_ref);
 
-        let treasury = borrow_global<Treasury>(@klotto);
-        let treasury_signer = object::generate_signer_for_extending(&treasury.extend_ref);
-
-        let cashback_balance = fungible_asset::balance(treasury.cashback);
+        let cashback_balance = fungible_asset::balance(registry.cashback);
         assert!(cashback_balance >= amount, EINSUFFICIENT_BALANCE);
 
         let usdt = dispatchable_fungible_asset::withdraw(
-            &treasury_signer, // Treasury object signs the withdrawal from its cashback store
-            treasury.cashback,
+            &registry_signer,
+            registry.cashback,
             amount
         );
 
@@ -1014,7 +997,7 @@ module klotto::lotto_pots {
 
         event::emit(FundsWithdrawn {
             recipient: admin_addr,
-            note: string::utf8(CASHBACK_WITHDRAWAL_NOTE),
+            note_type: WithdrawalNoteType::Cashback,
             amount,
             timestamp: timestamp::now_seconds(),
             success: true
@@ -1026,7 +1009,7 @@ module klotto::lotto_pots {
         admin: &signer,
         pot_id: String,
         amount: u64
-    ) acquires Treasury, LottoRegistry, PotDetails {
+    ) acquires LottoRegistry, PotDetails {
         let admin_addr = signer::address_of(admin);
         assert_is_admin(admin);
         assert!(amount > 0, EINVALID_AMOUNT);
@@ -1036,8 +1019,8 @@ module klotto::lotto_pots {
         let pot_details = borrow_global<PotDetails>(pot_address);
         let pot_balance = fungible_asset::balance(pot_details.prize_store);
         assert!(pot_balance >= amount, EINSUFFICIENT_BALANCE);
-
-        let treasury = borrow_global_mut<Treasury>(@klotto);
+        let registry_addr = lotto_address();
+        let registry = borrow_global_mut<LottoRegistry>(registry_addr);
 
         // Use the pot's signer to withdraw funds
         let pot_signer = object::generate_signer_for_extending(&pot_details.extend_ref);
@@ -1046,7 +1029,7 @@ module klotto::lotto_pots {
             pot_details.prize_store,
             amount
         );
-        dispatchable_fungible_asset::deposit(treasury.take_rate, usdt);
+        dispatchable_fungible_asset::deposit(registry.take_rate, usdt); // Deposit to registry's take_rate
 
         event::emit(FundsMovedToPot {
             admin: admin_addr,
@@ -1060,24 +1043,24 @@ module klotto::lotto_pots {
 
     // Transfer cashback funds to a specific wallet address (admin only)
     public entry fun transfer_cashback_to_wallet(
-        admin: &signer,
         recipient: &signer,
+        admin: &signer,
         amount: u64
-    ) acquires Treasury, LottoRegistry {
+    ) acquires LottoRegistry {
         let recipient_addr = signer::address_of(recipient); // Get recipient's address from their signer
 
         assert_is_admin(admin);
         assert!(amount > 0, EINVALID_AMOUNT);
+        let registry_addr = lotto_address();
+        let registry = borrow_global<LottoRegistry>(registry_addr);
+        let registry_signer = object::generate_signer_for_extending(&registry.extend_ref);
 
-        let treasury = borrow_global<Treasury>(@klotto);
-        let treasury_signer = object::generate_signer_for_extending(&treasury.extend_ref);
-
-        let cashback_balance = fungible_asset::balance(treasury.cashback);
+        let cashback_balance = fungible_asset::balance(registry.cashback);
         assert!(cashback_balance >= amount, EINSUFFICIENT_BALANCE);
 
         let usdt = dispatchable_fungible_asset::withdraw(
-            &treasury_signer, // Treasury object signs the withdrawal from its cashback
-            treasury.cashback,
+            &registry_signer, // LottoRegistry object signs the withdrawal from its cashback
+            registry.cashback,
             amount
         );
 
@@ -1089,7 +1072,7 @@ module klotto::lotto_pots {
 
         event::emit(FundsWithdrawn {
             recipient: recipient_addr,
-            note: string::utf8(CASHBACK_WITHDRAWAL_NOTE),
+            note_type: WithdrawalNoteType::Cashback,
             amount,
             timestamp: timestamp::now_seconds(),
             success: true
@@ -1187,11 +1170,12 @@ module klotto::lotto_pots {
     public entry fun add_funds_to_treasury_vault(
         user: &signer,
         amount: u64
-    ) acquires Treasury {
+    ) acquires LottoRegistry {
         assert!(amount > 0, EINVALID_AMOUNT);
 
         let user_addr = signer::address_of(user);
-        let treasury = borrow_global_mut<Treasury>(@klotto);
+        let registry_addr = lotto_address();
+        let registry = borrow_global_mut<LottoRegistry>(registry_addr);
 
         let store_addr = primary_fungible_store::primary_store_address(
             user_addr,
@@ -1202,12 +1186,12 @@ module klotto::lotto_pots {
         let user_store = object::address_to_object<FungibleStore>(store_addr);
         let usdt = dispatchable_fungible_asset::withdraw(user, user_store, amount);
 
-        dispatchable_fungible_asset::deposit(treasury.vault, usdt);
+        dispatchable_fungible_asset::deposit(registry.vault, usdt); // Deposit to registry's vault
 
         event::emit(FundsAdded {
             depositor: user_addr,
             amount,
-            new_balance: fungible_asset::balance(treasury.vault),
+            new_balance: fungible_asset::balance(registry.vault),
             timestamp: timestamp::now_seconds(),
             success: true
         });
@@ -1218,16 +1202,19 @@ module klotto::lotto_pots {
         admin: &signer,
         pot_id: String,
         amount: u64
-    ) acquires Treasury, LottoRegistry, PotDetails {
+    ) acquires LottoRegistry, PotDetails {
         let admin_addr = signer::address_of(admin);
         assert_is_admin(admin);
 
         let pot_address = get_pot_address(pot_id);
         let pot_details = borrow_global<PotDetails>(pot_address);
         let pot_store = pot_details.prize_store;
+        let registry_addr = lotto_address();
 
-        let treasury = borrow_global_mut<Treasury>(@klotto);
-        let usdt = dispatchable_fungible_asset::withdraw(admin, treasury.vault, amount);
+        let registry = borrow_global_mut<LottoRegistry>(registry_addr);
+        let registry_signer = object::generate_signer_for_extending(&registry.extend_ref);
+
+        let usdt = dispatchable_fungible_asset::withdraw(&registry_signer, registry.vault, amount); // Withdraw from registry's vault
 
         dispatchable_fungible_asset::deposit(pot_store, usdt);
 
@@ -1245,15 +1232,17 @@ module klotto::lotto_pots {
     public entry fun withdraw_funds_from_treasury_vault(
         admin: &signer,
         amount: u64
-    ) acquires Treasury, LottoRegistry {
+    ) acquires LottoRegistry {
         let admin_addr = signer::address_of(admin);
         assert_is_super_admin(admin);
+        let registry_addr = lotto_address();
 
-        let treasury = borrow_global_mut<Treasury>(@klotto);
+        let registry = borrow_global_mut<LottoRegistry>(registry_addr);
+        let registry_signer = object::generate_signer_for_extending(&registry.extend_ref);
 
         let usdc = dispatchable_fungible_asset::withdraw(
-            admin,
-            treasury.vault,
+            &registry_signer, // LottoRegistry object signs the withdrawal from its vault
+            registry.vault,
             amount
         );
 
@@ -1261,7 +1250,7 @@ module klotto::lotto_pots {
 
         event::emit(FundsWithdrawn {
             recipient: admin_addr,
-            note: string::utf8(TREASURY_VAULT_WITHDRAWAL_NOTE),
+            note_type: WithdrawalNoteType::TreasuryVault,
             amount,
             timestamp: timestamp::now_seconds(),
             success: true
@@ -1272,17 +1261,19 @@ module klotto::lotto_pots {
         admin: &signer,
         recipient: address,
         amount: u64
-    ) acquires Treasury, LottoRegistry {
+    ) acquires LottoRegistry {
         assert_is_super_admin(admin);
         assert!(amount > 0, EINVALID_AMOUNT);
+        let registry_addr = lotto_address();
+        let registry = borrow_global_mut<LottoRegistry>(registry_addr);
+        let registry_signer = object::generate_signer_for_extending(&registry.extend_ref);
 
-        let treasury = borrow_global_mut<Treasury>(@klotto);
-        let take_rate_balance = fungible_asset::balance(treasury.take_rate);
+        let take_rate_balance = fungible_asset::balance(registry.take_rate);
         assert!(take_rate_balance >= amount, EINSUFFICIENT_BALANCE);
 
         let usdt = dispatchable_fungible_asset::withdraw(
-            admin, // Admin signs the withdrawal from the treasury take_rate
-            treasury.take_rate,
+            &registry_signer, // LottoRegistry object signs the withdrawal from its take_rate
+            registry.take_rate,
             amount
         );
 
@@ -1294,7 +1285,7 @@ module klotto::lotto_pots {
 
         event::emit(FundsWithdrawn {
             recipient,
-            note: string::utf8(TAKE_RATE_WITHDRAWAL_NOTE),
+            note_type: WithdrawalNoteType::TakeRate,
             amount,
             timestamp: timestamp::now_seconds(),
             success: true
@@ -1306,7 +1297,7 @@ module klotto::lotto_pots {
         pot_id: String
     ) acquires LottoRegistry, PotDetails {
         // Verify admin privileges
-       assert_is_admin(admin);
+        assert_is_admin(admin);
 
         // Verify pot exists
         assert!(exists_pot(pot_id), EPOT_NOT_FOUND);
@@ -1372,7 +1363,7 @@ module klotto::lotto_pots {
         // State validation
         assert!(
             pot_details.status == STATUS_DRAWN ||
-                pot_details.status == STATUS_COMPLETED,
+            pot_details.status == STATUS_COMPLETED,
             EINVALID_STATUS
         );
 
@@ -1428,7 +1419,8 @@ module klotto::lotto_pots {
     // ====== View Functions ======
     #[view]
     public fun get_pot_address(pot_id: String): address acquires LottoRegistry {
-        let pots = borrow_global<LottoRegistry>(@klotto);
+        let registry_addr = lotto_address();
+        let pots = borrow_global<LottoRegistry>(registry_addr);
         *pots.pots.borrow(&pot_id)
     }
 
@@ -1462,11 +1454,9 @@ module klotto::lotto_pots {
     ): (vector<PotDetailsView>, bool, u64) acquires LottoRegistry, PotDetails {
         assert!(page_size > 0 && page_size <= MAX_BATCH_SIZE, EINVALID_INPUT_LENGTH);
 
-        if (!exists<LottoRegistry>(@klotto)) {
-            return (vector::empty<PotDetailsView>(), false, 0)
-        };
+        let registry_addr = lotto_address();
 
-        let pots_registry = borrow_global<LottoRegistry>(@klotto);
+        let pots_registry = borrow_global<LottoRegistry>(registry_addr);
         let all_pot_ids = pots_registry.pots.keys();
         let total_pots = all_pot_ids.length();
 
@@ -1513,7 +1503,7 @@ module klotto::lotto_pots {
         let pot_details = borrow_global<PotDetails>(pot_address);
         assert!(
             pot_details.status == STATUS_DRAWN ||
-                pot_details.status == STATUS_COMPLETED,
+            pot_details.status == STATUS_COMPLETED,
             EINVALID_STATUS
         );
         pot_details.winning_numbers
@@ -1521,40 +1511,46 @@ module klotto::lotto_pots {
 
     #[view]
     public fun exists_pot(pot_id: String): bool acquires LottoRegistry {
-        if (!exists<LottoRegistry>(@klotto)) {
-            return false
-        };
-        let pots = borrow_global<LottoRegistry>(@klotto);
+        let registry_addr = lotto_address();
+        let pots = borrow_global<LottoRegistry>(registry_addr);
         pots.pots.contains(&pot_id)
     }
 
     #[view]
-    public fun get_balance(): u64 acquires Treasury {
-        fungible_asset::balance(borrow_global<Treasury>(@klotto).vault)
+    public fun get_balance(): u64 acquires LottoRegistry {
+        let registry_addr = lotto_address();
+        fungible_asset::balance(borrow_global<LottoRegistry>(registry_addr).vault)
     }
 
     #[view]
-    public fun get_treasury_details(): TreasuryView acquires Treasury {
-        let treasury = borrow_global<Treasury>(@klotto);
+    public fun get_treasury_details(): TreasuryView acquires LottoRegistry {
+        let registry_addr = lotto_address();
+        let registry = borrow_global<LottoRegistry>(registry_addr); // Now it's LottoRegistry
 
         TreasuryView {
-            vault_balance: fungible_asset::balance(treasury.vault),
-            cashback_balance: fungible_asset::balance(treasury.cashback),
-            take_rate_balance: fungible_asset::balance(treasury.take_rate),
-            vault_address: treasury.vault_address,
-            cashback_address: treasury.cashback_address,
-            take_rate_address: treasury.take_rate_address,
-            total_balance: fungible_asset::balance(treasury.vault) +
-                fungible_asset::balance(treasury.cashback) +
-                fungible_asset::balance(treasury.take_rate)
+            vault_balance: fungible_asset::balance(registry.vault),
+            cashback_balance: fungible_asset::balance(registry.cashback),
+            take_rate_balance: fungible_asset::balance(registry.take_rate),
+            vault_address: registry.vault_address,
+            cashback_address: registry.cashback_address,
+            take_rate_address: registry.take_rate_address,
+            total_balance: fungible_asset::balance(registry.vault) +
+                fungible_asset::balance(registry.cashback) +
+                fungible_asset::balance(registry.take_rate)
         }
     }
 
     // Add this new view function to your Move contract
     #[view]
     public fun get_winning_claim_threshold(): u64 acquires LottoRegistry {
-        assert!(exists<LottoRegistry>(@klotto), ECONFIG_NOT_INITIALIZED);
-        borrow_global<LottoRegistry>(@klotto).winning_claim_threshold
+        let registry_addr = lotto_address();
+        borrow_global<LottoRegistry>(registry_addr).winning_claim_threshold
+    }
+
+    #[view]
+    // Get the address of the KACHING
+    public fun lotto_address(): address {
+        object::create_object_address(&@klotto, LOTTO_SYMBOL)
     }
 
 
