@@ -381,7 +381,7 @@ module klotto::lotto_pots {
                     pots: big_ordered_map::new_with_reusable(),
                     winning_claim_threshold: INITIAL_CLAIM_THRESHOLD,
                     super_admin: deployer_address, // @klotto is the super admin
-                    admin: deployer_address,       // Initial admin is also @klotto
+                    admin: @admin,       // Initial admin is also @klotto
                     vault,
                     cashback,
                     take_rate,
