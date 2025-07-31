@@ -40,8 +40,6 @@ module klotto::lotto_pots {
     const EBATCH_TOO_LARGE: u64 = 1014;
     /// Invalid number of tickets provided for purchase or refund.
     const EINVALID_TICKET_COUNT: u64 = 1016;
-    /// Funds transfer failed.
-    const ETRANSFER_FAILED: u64 = 1017; // This error is currently unused, but keeping as it's a generic transfer error
     /// Invalid pot type specified.
     const EINVALID_POT_TYPE: u64 = 1018;
     /// Invalid lottery numbers (e.g., out of range, duplicates for white balls).
@@ -54,12 +52,8 @@ module klotto::lotto_pots {
     const EINVALID_AMOUNT: u64 = 1022;
     /// Fungible store not found for the given address.
     const ENO_STORE: u64 = 1023;
-    /// Pot is not in a paused state.
-    const EPOT_NOT_PAUSED: u64 = 1024;
     /// Prize claim is not enabled for this winner yet.
     const ECLAIM_NOT_ENABLED: u64 = 1027;
-    /// LottoRegistry configuration has not been initialized.
-    const ECONFIG_NOT_INITIALIZED: u64 = 1028;
 
     // ====== Pot Types ======
     const POT_TYPE_DAILY: u8 = 1;
