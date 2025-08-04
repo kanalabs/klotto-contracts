@@ -53,6 +53,8 @@ module klotto::lotto_pots {
     const ENO_STORE: u64 = 1023;
     /// Prize claim is not enabled for this winner yet.
     const ECLAIM_NOT_ENABLED: u64 = 1027;
+    /// The draw time for the pot has already been reached.
+    //const EDRAW_TIME_ALREADY_REACHED: u64 = 1011;
 
     // ====== Pot Types ======
     const POT_TYPE_DAILY: u8 = 1;
@@ -101,7 +103,6 @@ module klotto::lotto_pots {
         cashback_address: address,
         take_rate_address: address,
         extend_ref: ExtendRef,
-        delete_ref: DeleteRef,
     }
 
     #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
@@ -349,36 +350,42 @@ module klotto::lotto_pots {
     fun init_module(deployer: &signer) {
         let deployer_address = signer::address_of(deployer);
         assert!(deployer_address == @klotto, ENOT_SUPER_ADMIN);
+
+        let registry_addr = lotto_address();
+        if (exists<LottoRegistry>(registry_addr)) {
+            return
+        };
+
         let registry_constructor_ref = &object::create_named_object(deployer, LOTTO_SYMBOL);
         let registry_object_signer = &object::generate_signer(registry_constructor_ref);
         let registry_object_address = signer::address_of(registry_object_signer);
 
-        let usdt_metadata = get_asset_metadata();
+        let asset_metadata = get_asset_metadata();
 
         let vault_store_constructor_ref = object::create_object(registry_object_address);
         let vault = fungible_asset::create_store(
                 &vault_store_constructor_ref,
-                usdt_metadata
+                asset_metadata
         );
         let vault_address = object::object_address(&vault);
 
         let cashback_store_constructor_ref = object::create_object(registry_object_address);
         let cashback = fungible_asset::create_store(
                 &cashback_store_constructor_ref,
-                usdt_metadata
+                asset_metadata
         );
         let cashback_address = object::object_address(&cashback);
 
         let take_rate_store_constructor_ref = object::create_object(registry_object_address);
         let take_rate = fungible_asset::create_store(
                 &take_rate_store_constructor_ref,
-                usdt_metadata
+                asset_metadata
         );
         let take_rate_address = object::object_address(&take_rate);
 
         move_to(registry_object_signer,
                 LottoRegistry {
-                    pots: big_ordered_map::new_with_reusable(),
+                    pots: big_ordered_map::new_with_config(128, 1024, true),
                     winning_claim_threshold: INITIAL_CLAIM_THRESHOLD,
                     super_admin: deployer_address, // @klotto is the super admin
                     admin: @admin,       // Initial admin is also @klotto
@@ -389,7 +396,6 @@ module klotto::lotto_pots {
                     cashback_address,
                     take_rate_address,
                     extend_ref: object::generate_extend_ref(registry_constructor_ref),
-                    delete_ref: object::generate_delete_ref(registry_constructor_ref),
                 }
         );
         
@@ -535,7 +541,7 @@ module klotto::lotto_pots {
         assert!(ticket_count == all_numbers.length(), EINVALID_TICKET_COUNT);
         assert!(pot_details.pot_type <= 3, EINVALID_POT_TYPE);
         assert!(ticket_count > 0 && ticket_count <= 100, EINVALID_TICKET_COUNT);
-
+        //assert!(now < pot_details.scheduled_draw_time, EDRAW_TIME_ALREADY_REACHED);
         // Validate input for each set of numbers
         let i = 0;
         while (i < ticket_count) {
@@ -591,11 +597,11 @@ module klotto::lotto_pots {
 
     // Process payment for tickets
     fun process_payment(buyer: &signer, pot_store_addr: address, amount: u64) {
-        let usdt_metadata = get_asset_metadata();
+        let asset_metadata = get_asset_metadata();
 
         let asset = primary_fungible_store::withdraw(
             buyer,
-            usdt_metadata,
+            asset_metadata,
             amount
         );
 
@@ -1083,7 +1089,7 @@ module klotto::lotto_pots {
         let pot_details = borrow_global_mut<PotDetails>(pot_address);
 
         assert!(
-            pot_details.status != STATUS_CANCELLATION_IN_PROGRESS && pot_details.status != STATUS_CANCELLED,
+            pot_details.status != STATUS_CANCELLATION_IN_PROGRESS || pot_details.status != STATUS_CANCELLED,
             EINVALID_STATUS
         );
 
@@ -1104,7 +1110,7 @@ module klotto::lotto_pots {
         let pot_details = borrow_global_mut<PotDetails>(pot_address);
 
         assert!(
-            pot_details.status == STATUS_ACTIVE || pot_details.status == STATUS_PAUSED,
+            pot_details.status == STATUS_ACTIVE || pot_details.status == STATUS_PAUSED || pot_details.status == STATUS_CANCELLATION_IN_PROGRESS,
             EINVALID_STATUS
         );
 
@@ -1124,9 +1130,19 @@ module klotto::lotto_pots {
             let user_address = refund_user_addresses[i];
             let num_tickets = refund_ticket_counts[i];
 
+            // Skip if address already exists in refunds
+            if (pot_details.refunds.contains(&user_address)) {
+                i += 1;
+                continue
+            };
+
             let refund_amount = num_tickets * pot_details.ticket_price;
 
             if (refund_amount > 0) {
+                // Check if pot has sufficient balance before attempting transfer
+                let pot_balance = fungible_asset::balance(pot_details.prize_store);
+                assert!(pot_balance >= refund_amount, EINSUFFICIENT_BALANCE);
+                
                 let prize_asset = fungible_asset::store_metadata(pot_details.prize_store);
                 let user_store = primary_fungible_store::ensure_primary_store_exists(user_address, prize_asset);
 
@@ -1138,6 +1154,9 @@ module klotto::lotto_pots {
                     user_store,
                     refund_amount
                 );
+                
+                // Add to refunds map to track processed refunds
+                pot_details.refunds.add(user_address, refund_amount);
                 total_refund_amount += refund_amount;
 
                 // Populate vectors for the event

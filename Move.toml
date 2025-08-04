@@ -4,7 +4,7 @@ version = "1.0.0"
 authors = []
 
 [addresses]
-klotto = "0xdd9d82f82320d6e047aa713f8c93d6d7ba666d54a3f1d82257423dda5437cea3"
+klotto = "0x386771e20631dfd1cd6741fd0d52ebc885912ae8f1d1acecd5df4007d362c26a"
 admin = "0xa7363b15b3771d1e9cbd8e3a1555fa319fe384c0b6f715a20b05e2bb90e4b53b"
 usdt_asset = "0xd5d0d561493ea2b9410f67da804653ae44e793c2423707d4f11edb2e38192050"
 usdc_asset = "0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b"
