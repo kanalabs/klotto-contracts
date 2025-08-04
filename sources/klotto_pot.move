@@ -53,6 +53,8 @@ module klotto::lotto_pots {
     const ENO_STORE: u64 = 1023;
     /// Prize claim is not enabled for this winner yet.
     const ECLAIM_NOT_ENABLED: u64 = 1027;
+    /// The draw time for the pot has already been reached.
+    //const EDRAW_TIME_ALREADY_REACHED: u64 = 1011;
 
     // ====== Pot Types ======
     const POT_TYPE_DAILY: u8 = 1;
@@ -539,7 +541,7 @@ module klotto::lotto_pots {
         assert!(ticket_count == all_numbers.length(), EINVALID_TICKET_COUNT);
         assert!(pot_details.pot_type <= 3, EINVALID_POT_TYPE);
         assert!(ticket_count > 0 && ticket_count <= 100, EINVALID_TICKET_COUNT);
-
+        //assert!(now < pot_details.scheduled_draw_time, EDRAW_TIME_ALREADY_REACHED);
         // Validate input for each set of numbers
         let i = 0;
         while (i < ticket_count) {
@@ -1087,7 +1089,7 @@ module klotto::lotto_pots {
         let pot_details = borrow_global_mut<PotDetails>(pot_address);
 
         assert!(
-            pot_details.status != STATUS_CANCELLATION_IN_PROGRESS && pot_details.status != STATUS_CANCELLED,
+            pot_details.status != STATUS_CANCELLATION_IN_PROGRESS || pot_details.status != STATUS_CANCELLED,
             EINVALID_STATUS
         );
 
@@ -1108,7 +1110,7 @@ module klotto::lotto_pots {
         let pot_details = borrow_global_mut<PotDetails>(pot_address);
 
         assert!(
-            pot_details.status == STATUS_ACTIVE || pot_details.status == STATUS_PAUSED,
+            pot_details.status == STATUS_ACTIVE || pot_details.status == STATUS_PAUSED || pot_details.status == STATUS_CANCELLATION_IN_PROGRESS,
             EINVALID_STATUS
         );
 
@@ -1128,9 +1130,19 @@ module klotto::lotto_pots {
             let user_address = refund_user_addresses[i];
             let num_tickets = refund_ticket_counts[i];
 
+            // Skip if address already exists in refunds
+            if (pot_details.refunds.contains(&user_address)) {
+                i += 1;
+                continue
+            };
+
             let refund_amount = num_tickets * pot_details.ticket_price;
 
             if (refund_amount > 0) {
+                // Check if pot has sufficient balance before attempting transfer
+                let pot_balance = fungible_asset::balance(pot_details.prize_store);
+                assert!(pot_balance >= refund_amount, EINSUFFICIENT_BALANCE);
+                
                 let prize_asset = fungible_asset::store_metadata(pot_details.prize_store);
                 let user_store = primary_fungible_store::ensure_primary_store_exists(user_address, prize_asset);
 
@@ -1142,6 +1154,9 @@ module klotto::lotto_pots {
                     user_store,
                     refund_amount
                 );
+                
+                // Add to refunds map to track processed refunds
+                pot_details.refunds.add(user_address, refund_amount);
                 total_refund_amount += refund_amount;
 
                 // Populate vectors for the event
