@@ -148,7 +148,6 @@ module klotto::lotto_pots {
     }
 
 
-
     #[view]
     struct PotDetailsView has copy, drop, store {
         pot_address: address,
@@ -185,7 +184,7 @@ module klotto::lotto_pots {
     }
 
     // ====== Events ======
-    
+
     #[event]
     struct AdminClaimThresholdUpdated has drop, store {
         old_threshold: u64,
@@ -364,41 +363,40 @@ module klotto::lotto_pots {
 
         let vault_store_constructor_ref = object::create_object(registry_object_address);
         let vault = fungible_asset::create_store(
-                &vault_store_constructor_ref,
-                asset_metadata
+            &vault_store_constructor_ref,
+            asset_metadata
         );
         let vault_address = object::object_address(&vault);
 
         let cashback_store_constructor_ref = object::create_object(registry_object_address);
         let cashback = fungible_asset::create_store(
-                &cashback_store_constructor_ref,
-                asset_metadata
+            &cashback_store_constructor_ref,
+            asset_metadata
         );
         let cashback_address = object::object_address(&cashback);
 
         let take_rate_store_constructor_ref = object::create_object(registry_object_address);
         let take_rate = fungible_asset::create_store(
-                &take_rate_store_constructor_ref,
-                asset_metadata
+            &take_rate_store_constructor_ref,
+            asset_metadata
         );
         let take_rate_address = object::object_address(&take_rate);
 
         move_to(registry_object_signer,
-                LottoRegistry {
-                    pots: big_ordered_map::new_with_config(128, 1024, true),
-                    winning_claim_threshold: INITIAL_CLAIM_THRESHOLD,
-                    super_admin: deployer_address, // @klotto is the super admin
-                    admin: @admin,       // Initial admin is also @klotto
-                    vault,
-                    cashback,
-                    take_rate,
-                    vault_address,
-                    cashback_address,
-                    take_rate_address,
-                    extend_ref: object::generate_extend_ref(registry_constructor_ref),
-                }
+            LottoRegistry {
+                pots: big_ordered_map::new_with_config(128, 1024, true),
+                winning_claim_threshold: INITIAL_CLAIM_THRESHOLD,
+                super_admin: deployer_address, // @klotto is the super admin
+                admin: @admin, // Initial admin is also @klotto
+                vault,
+                cashback,
+                take_rate,
+                vault_address,
+                cashback_address,
+                take_rate_address,
+                extend_ref: object::generate_extend_ref(registry_constructor_ref),
+            }
         );
-        
     }
 
     // Helper function to validate if the signer is the current admin
@@ -435,7 +433,7 @@ module klotto::lotto_pots {
             timestamp: timestamp::now_seconds(),
         });
     }
-    
+
     // New function to update the admin claim threshold
     public entry fun update_winning_claim_threshold(
         admin: &signer,
@@ -446,7 +444,7 @@ module klotto::lotto_pots {
         let registry_addr = lotto_address();
         let config = borrow_global_mut<LottoRegistry>(registry_addr);
         let old_threshold = config.winning_claim_threshold;
-        
+
         config.winning_claim_threshold = new_threshold;
 
         event::emit(AdminClaimThresholdUpdated {
@@ -704,7 +702,7 @@ module klotto::lotto_pots {
 
         assert!(
             pot_details.status == STATUS_DRAWN ||
-            pot_details.status == STATUS_WINNER_ANNOUNCEMENT_IN_PROGRESS,
+                pot_details.status == STATUS_WINNER_ANNOUNCEMENT_IN_PROGRESS,
             EINVALID_STATUS
         );
 
@@ -734,10 +732,10 @@ module klotto::lotto_pots {
                 continue;
             };
             pot_details.winners.add(winner_addr, ClaimDetails {
-                    amount: prize_amount,
-                    claimed: false,
-                    is_claimable: is_claimable_initially
-                });
+                amount: prize_amount,
+                claimed: false,
+                is_claimable: is_claimable_initially
+            });
             total_prize_announced_in_batch += prize_amount;
             i += 1;
         };
@@ -770,10 +768,10 @@ module klotto::lotto_pots {
 
         assert!(
             pot_details.status == STATUS_DRAWN ||
-            pot_details.status == STATUS_WINNER_ANNOUNCEMENT_IN_PROGRESS,
+                pot_details.status == STATUS_WINNER_ANNOUNCEMENT_IN_PROGRESS,
             EINVALID_STATUS
         );
-        pot_details.status = STATUS_COMPLETED;   
+        pot_details.status = STATUS_COMPLETED;
     }
 
     // NEW ENTRY FUNCTION: Admin can update the claimable status for a specific winner
@@ -902,6 +900,7 @@ module klotto::lotto_pots {
             }
         );
     }
+
     // Move remaining funds to treasury
     public entry fun move_remaining_to_treasury_vault(
         admin: &signer,
@@ -936,6 +935,7 @@ module klotto::lotto_pots {
             }
         );
     }
+
     // Add funds to cashback from admin's primary store
     public entry fun add_funds_to_cashback(
         admin: &signer,
@@ -1077,6 +1077,7 @@ module klotto::lotto_pots {
             success: true
         });
     }
+
     // Cancel a pot
     public entry fun cancel_pot(
         admin: &signer,
@@ -1110,7 +1111,7 @@ module klotto::lotto_pots {
         let pot_details = borrow_global_mut<PotDetails>(pot_address);
 
         assert!(
-            pot_details.status == STATUS_ACTIVE || pot_details.status == STATUS_PAUSED || pot_details.status == STATUS_CANCELLATION_IN_PROGRESS,
+            pot_details.status == STATUS_ACTIVE || pot_details.status == STATUS_PAUSED || pot_details.status == STATUS_CANCELLATION_IN_PROGRESS || pot_details.status == STATUS_DRAWN,
             EINVALID_STATUS
         );
 
@@ -1142,7 +1143,7 @@ module klotto::lotto_pots {
                 // Check if pot has sufficient balance before attempting transfer
                 let pot_balance = fungible_asset::balance(pot_details.prize_store);
                 assert!(pot_balance >= refund_amount, EINSUFFICIENT_BALANCE);
-                
+
                 let prize_asset = fungible_asset::store_metadata(pot_details.prize_store);
                 let user_store = primary_fungible_store::ensure_primary_store_exists(user_address, prize_asset);
 
@@ -1154,7 +1155,7 @@ module klotto::lotto_pots {
                     user_store,
                     refund_amount
                 );
-                
+
                 // Add to refunds map to track processed refunds
                 pot_details.refunds.add(user_address, refund_amount);
                 total_refund_amount += refund_amount;
@@ -1165,7 +1166,7 @@ module klotto::lotto_pots {
             };
             i += 1;
         };
-        
+
         event::emit(BatchRefundsProcessedEvent {
             pot_id: copy pot_id,
             user_count: batch_size,
@@ -1226,7 +1227,11 @@ module klotto::lotto_pots {
         let registry = borrow_global_mut<LottoRegistry>(registry_addr);
         let registry_signer = object::generate_signer_for_extending(&registry.extend_ref);
 
-        let usdt = dispatchable_fungible_asset::withdraw(&registry_signer, registry.vault, amount); // Withdraw from registry's vault
+        let usdt = dispatchable_fungible_asset::withdraw(
+            &registry_signer,
+            registry.vault,
+            amount
+        ); // Withdraw from registry's vault
 
         dispatchable_fungible_asset::deposit(pot_store, usdt);
 
@@ -1375,7 +1380,7 @@ module klotto::lotto_pots {
         // State validation
         assert!(
             pot_details.status == STATUS_DRAWN ||
-            pot_details.status == STATUS_COMPLETED,
+                pot_details.status == STATUS_COMPLETED,
             EINVALID_STATUS
         );
 
@@ -1443,7 +1448,7 @@ module klotto::lotto_pots {
         let pot_address = get_pot_address(pot_id);
         let pot_details = borrow_global<PotDetails>(pot_address);
         let winning_numbers = pot_details.winning_numbers;
-        
+
         PotDetailsView {
             pot_address,
             pot_id: copy pot_id,
@@ -1515,7 +1520,7 @@ module klotto::lotto_pots {
         let pot_details = borrow_global<PotDetails>(pot_address);
         assert!(
             pot_details.status == STATUS_DRAWN ||
-            pot_details.status == STATUS_COMPLETED,
+                pot_details.status == STATUS_COMPLETED,
             EINVALID_STATUS
         );
         pot_details.winning_numbers
