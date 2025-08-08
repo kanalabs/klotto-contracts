@@ -654,24 +654,30 @@ module klotto::lotto_pots {
         let current_time = timestamp::now_seconds();
         assert!(current_time >= pot_details.scheduled_draw_time, EDRAW_TIME_NOT_REACHED);
 
-        let white_balls = vector::empty<u8>();
-        let i = 0;
-        while (i < WHITE_BALL_COUNT) {
-            let random_num = (((randomness::u64_integer()) % (WHITE_BALL_MAX as u64)) as u8) + 1;
+        // --- Start of commented-out original random number generation code ---
+        // let white_balls = vector::empty<u8>();
+        // let i = 0;
+        // while (i < WHITE_BALL_COUNT) {
+        //     let random_num = (((randomness::u64_integer()) % (WHITE_BALL_MAX as u64)) as u8) + 1;
+        //
+        //     if (!white_balls.contains(&random_num)) {
+        //         white_balls.push_back(random_num);
+        //         i += 1;
+        //     }
+        // };
+        //
+        // sort_vector(&mut white_balls);
+        //
+        // let powerball_random = randomness::u64_integer();
+        // let powerball_num = ((powerball_random % (POWERBALL_MAX as u64)) as u8) + 1;
+        //
+        // white_balls.push_back(powerball_num);
+        // --- End of commented-out original random number generation code ---
 
-            if (!white_balls.contains(&random_num)) {
-                white_balls.push_back(random_num);
-                i += 1;
-            }
-        };
-
-        sort_vector(&mut white_balls);
-
-        let powerball_random = randomness::u64_integer();
-        let powerball_num = ((powerball_random % (POWERBALL_MAX as u64)) as u8) + 1;
-
-        white_balls.push_back(powerball_num);
+        // --- Start of Fixed Winning Numbers for Testing ---
+        let white_balls = vector<u8>[10, 26, 35, 41, 52, 6];
         pot_details.winning_numbers = white_balls;
+        // --- End of Fixed Winning Numbers for Testing ---
 
         event::emit(
             PotDrawnEvent {
