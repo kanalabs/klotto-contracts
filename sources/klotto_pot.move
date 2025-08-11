@@ -54,7 +54,7 @@ module klotto::lotto_pots {
     /// Prize claim is not enabled for this winner yet.
     const ECLAIM_NOT_ENABLED: u64 = 1027;
     /// The draw time for the pot has already been reached.
-    //const EDRAW_TIME_ALREADY_REACHED: u64 = 1011;
+    const EDRAW_TIME_ALREADY_REACHED: u64 = 1011;
 
     // ====== Pot Types ======
     const POT_TYPE_DAILY: u8 = 1;
@@ -301,6 +301,14 @@ module klotto::lotto_pots {
     }
 
     #[event]
+    struct FundsMovedToCashbackFromTreasury has drop, store {
+        admin: address,
+        amount: u64,
+        timestamp: u64,
+        success: bool
+    }
+
+    #[event]
     struct FundsWithdrawn has drop, store {
         recipient: address,
         note_type: WithdrawalNoteType,
@@ -539,7 +547,7 @@ module klotto::lotto_pots {
         assert!(ticket_count == all_numbers.length(), EINVALID_TICKET_COUNT);
         assert!(pot_details.pot_type <= 3, EINVALID_POT_TYPE);
         assert!(ticket_count > 0 && ticket_count <= 100, EINVALID_TICKET_COUNT);
-        //assert!(now < pot_details.scheduled_draw_time, EDRAW_TIME_ALREADY_REACHED);
+        assert!(now < pot_details.scheduled_draw_time, EDRAW_TIME_ALREADY_REACHED);
         // Validate input for each set of numbers
         let i = 0;
         while (i < ticket_count) {
@@ -938,30 +946,60 @@ module klotto::lotto_pots {
 
     // Add funds to cashback from admin's primary store
     public entry fun add_funds_to_cashback(
-        admin: &signer,
+        user: &signer,
         amount: u64
     ) acquires LottoRegistry {
-        let admin_addr = signer::address_of(admin);
-        assert_is_admin(admin);
         assert!(amount > 0, EINVALID_AMOUNT);
+        let user_addr = signer::address_of(user);
         let registry_addr = lotto_address();
         let registry = borrow_global_mut<LottoRegistry>(registry_addr);
 
         let store_addr = primary_fungible_store::primary_store_address(
-            admin_addr,
+            user_addr,
             get_asset_metadata()
         );
         assert!(fungible_asset::store_exists(store_addr), ENO_STORE);
 
-        let admin_store = object::address_to_object<FungibleStore>(store_addr);
-        let usdt = dispatchable_fungible_asset::withdraw(admin, admin_store, amount);
+        let user_store = object::address_to_object<FungibleStore>(store_addr);
+        let usdt = dispatchable_fungible_asset::withdraw(user, user_store, amount);
 
         dispatchable_fungible_asset::deposit(registry.cashback, usdt);
 
         event::emit(FundsAdded {
-            depositor: admin_addr,
+            depositor: user_addr,
             amount,
             new_balance: fungible_asset::balance(registry.cashback),
+            timestamp: timestamp::now_seconds(),
+            success: true
+        });
+    }
+
+    /// Allows an admin to move funds from the `treasury_vault` to the `cashback` fund.
+    public entry fun fund_cashback_from_treasury(
+        admin: &signer,
+        amount: u64
+    ) acquires LottoRegistry {
+        assert_is_admin(admin);
+        assert!(amount > 0, EINVALID_AMOUNT);
+
+        let registry_addr = lotto_address();
+        let registry = borrow_global_mut<LottoRegistry>(registry_addr);
+        let registry_signer = object::generate_signer_for_extending(&registry.extend_ref);
+
+        let treasury_balance = fungible_asset::balance(registry.vault);
+        assert!(treasury_balance >= amount, EINSUFFICIENT_BALANCE);
+
+        let funds_to_move = dispatchable_fungible_asset::withdraw(
+            &registry_signer,
+            registry.vault,
+            amount
+        );
+
+        dispatchable_fungible_asset::deposit(registry.cashback, funds_to_move);
+
+        event::emit(FundsMovedToCashbackFromTreasury {
+            admin: signer::address_of(admin),
+            amount,
             timestamp: timestamp::now_seconds(),
             success: true
         });
