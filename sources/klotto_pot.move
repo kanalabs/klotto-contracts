@@ -81,7 +81,7 @@ module klotto::lotto_pots {
     const MAX_BATCH_SIZE: u64 = 1000;
     const INITIAL_CLAIM_THRESHOLD: u64 = 10000000;
 
-    const USDC_ASSET: address = @usdt_asset;
+    const USDC_ASSET: address = @usdc_asset;
     const LOTTO_SYMBOL: vector<u8> = b"KACHING";
 
     #[test_only]
@@ -372,13 +372,13 @@ module klotto::lotto_pots {
     #[lint::allow_unsafe_randomness]
     public fun init_test(deployer: &signer) {
         // Create test asset with primary store support
-        let usdt_account = &create_account_for_test(@usdt_asset);
-        let constructor_ref = object::create_named_object(usdt_account, b"TEST_USDT");
+        let usdt_account = &create_account_for_test(@usdc_asset);
+        let constructor_ref = object::create_named_object(usdt_account, b"TEST_USDC");
         primary_fungible_store::create_primary_store_enabled_fungible_asset(
             &constructor_ref,
             option::some(1000000000),
-            string::utf8(b"Test USDT"),
-            string::utf8(b"TUSDT"),
+            string::utf8(b"Test USDC"),
+            string::utf8(b"TUSDC"),
             6,
             string::utf8(b"https://example.com/icon.png"),
             string::utf8(b"https://example.com")
@@ -402,13 +402,13 @@ module klotto::lotto_pots {
 
     #[test_only]
     public fun get_test_asset_metadata(): Object<Metadata> acquires TestAssetRefs {
-        let refs = borrow_global<TestAssetRefs>(@usdt_asset);
+        let refs = borrow_global<TestAssetRefs>(USDC_ASSET);
         refs.metadata
     }
 
     #[test_only]
     public fun mint_test_tokens(amount: u64): aptos_framework::fungible_asset::FungibleAsset acquires TestAssetRefs {
-        let refs = borrow_global<TestAssetRefs>(@usdt_asset);
+        let refs = borrow_global<TestAssetRefs>(USDC_ASSET);
         aptos_framework::fungible_asset::mint(&refs.mint_ref, amount)
     }
 
@@ -1523,25 +1523,13 @@ module klotto::lotto_pots {
     }
 
     fun get_asset_metadata(): Object<Metadata> {
-        // Check if we're in test mode by seeing if the object exists
-        let test_asset_addr = object::create_object_address(&@usdt_asset, b"TEST_USDT");
+        // Check if test asset exists (only in test environment)
+        let test_asset_addr = object::create_object_address(&USDC_ASSET, b"TEST_USDC");
         if (object::object_exists<Metadata>(test_asset_addr)) {
-            // Test asset already exists, use it
+            // Test environment - use test asset
             object::address_to_object<Metadata>(test_asset_addr)
-        } else if (!object::object_exists<Metadata>(USDC_ASSET)) {
-            // Create test asset metadata
-            let usdt_account = &create_account_for_test(@usdt_asset);
-            let constructor_ref = object::create_named_object(usdt_account, b"TEST_USDT");
-            fungible_asset::add_fungibility(
-                &constructor_ref,
-                option::some(1000000000),
-                string::utf8(b"Test USDT"),
-                string::utf8(b"TUSDT"),
-                6,
-                string::utf8(b"https://example.com/icon.png"),
-                string::utf8(b"https://example.com")
-            )
         } else {
+            // Production environment - use actual USDC metadata
             object::address_to_object<Metadata>(USDC_ASSET)
         }
     }
