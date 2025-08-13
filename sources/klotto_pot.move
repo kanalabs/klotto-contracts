@@ -60,6 +60,7 @@ module klotto::lotto_pots {
     const POT_TYPE_DAILY: u8 = 1;
     const POT_TYPE_BIWEEKLY: u8 = 2;
     const POT_TYPE_MONTHLY: u8 = 3;
+    const POT_TYPE_CUSTOM: u8 = 4;
 
     // ====== Pool Types ======
     const POOL_TYPE_FIXED: u8 = 1;
@@ -602,7 +603,7 @@ module klotto::lotto_pots {
         assert!(
             pot_type == POT_TYPE_DAILY ||
                 pot_type == POT_TYPE_BIWEEKLY ||
-                pot_type == POT_TYPE_MONTHLY,
+                pot_type == POT_TYPE_MONTHLY || pot_type == POT_TYPE_CUSTOM,
             EINVALID_STATUS
         );
         let registry_addr = lotto_address();
@@ -670,7 +671,7 @@ module klotto::lotto_pots {
         let pot_details = borrow_global<PotDetails>(pot_address);
         assert!(pot_details.status == STATUS_ACTIVE, EPOT_NOT_ACTIVE);
         assert!(ticket_count == all_numbers.length(), EINVALID_TICKET_COUNT);
-        assert!(pot_details.pot_type <= 3, EINVALID_POT_TYPE);
+        assert!(pot_details.pot_type <= 4, EINVALID_POT_TYPE);
         assert!(ticket_count > 0 && ticket_count <= 100, EINVALID_TICKET_COUNT);
         assert!(now < pot_details.scheduled_draw_time, EDRAW_TIME_ALREADY_REACHED);
         // Validate input for each set of numbers
