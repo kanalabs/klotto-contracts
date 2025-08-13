@@ -85,15 +85,6 @@ module klotto::lotto_pots {
     const USDC_ASSET: address = @usdc_asset;
     const LOTTO_SYMBOL: vector<u8> = b"KACHING";
 
-    #[test_only]
-    use aptos_framework::account::{ create_account_for_test };
-    #[test_only]
-    use std::option;
-    #[test_only]
-    use std::string;
-    #[test_only]
-    use aptos_framework::fungible_asset::MintRef;
-
     enum WithdrawalNoteType has copy, drop, store {
         Cashback,
         TreasuryVault,
@@ -362,120 +353,7 @@ module klotto::lotto_pots {
         winner_addresses: vector<address>,
         prize_amounts: vector<u64>
     }
-
-    #[test_only]
-    struct TestAssetRefs has key {
-        mint_ref: MintRef,
-        metadata: Object<Metadata>,
-    }
-
-    #[test_only]
-    #[lint::allow_unsafe_randomness]
-    public fun init_test(deployer: &signer) {
-        // Create test asset with primary store support
-        let usdt_account = &create_account_for_test(@usdc_asset);
-        let constructor_ref = object::create_named_object(usdt_account, b"TEST_USDC");
-        primary_fungible_store::create_primary_store_enabled_fungible_asset(
-            &constructor_ref,
-            option::some(1000000000),
-            string::utf8(b"Test USDC"),
-            string::utf8(b"TUSDC"),
-            6,
-            string::utf8(b"https://example.com/icon.png"),
-            string::utf8(b"https://example.com")
-        );
-        let metadata = object::object_from_constructor_ref<Metadata>(&constructor_ref);
-        let mint_ref = fungible_asset::generate_mint_ref(&constructor_ref);
-        
-        // Store refs for testing
-        move_to(usdt_account, TestAssetRefs {
-            mint_ref,
-            metadata,
-        });
-        
-        init_module(deployer);
-        let aptos = &create_account_for_test(@aptos_framework);
-        timestamp::set_time_has_started_for_testing(aptos);
-        
-        // Initialize randomness for testing
-        aptos_std::randomness::initialize_for_testing(aptos);
-    }
-
-    #[test_only]
-    public fun get_test_asset_metadata(): Object<Metadata> acquires TestAssetRefs {
-        let refs = borrow_global<TestAssetRefs>(USDC_ASSET);
-        refs.metadata
-    }
-
-    #[test_only]
-    public fun mint_test_tokens(amount: u64): aptos_framework::fungible_asset::FungibleAsset acquires TestAssetRefs {
-        let refs = borrow_global<TestAssetRefs>(USDC_ASSET);
-        aptos_framework::fungible_asset::mint(&refs.mint_ref, amount)
-    }
-
-    #[test_only]
-    #[lint::allow_unsafe_randomness]
-    public fun test_draw_pot(admin: &signer, pot_id: String) acquires LottoRegistry, PotDetails {
-        draw_pot(admin, pot_id);
-    }
-
-    #[test_only]
-    public fun get_pot_prize_pool(pot_id: String): u64 acquires LottoRegistry, PotDetails {
-        let details = get_pot_details(pot_id);
-        details.prize_pool
-    }
-
-    #[test_only]
-    public fun get_pot_status(pot_id: String): u8 acquires LottoRegistry, PotDetails {
-        let details = get_pot_details(pot_id);
-        details.status
-    }
-
-    #[test_only]
-    public fun get_pot_winning_numbers_count(pot_id: String): u64 acquires LottoRegistry, PotDetails {
-        let details = get_pot_details(pot_id);
-        vector::length(&details.winning_numbers)
-    }
-
-    #[test_only]
-    public fun get_treasury_vault_balance(): u64 acquires LottoRegistry {
-        let treasury = get_treasury_details();
-        treasury.vault_balance
-    }
-
-    #[test_only]
-    public fun get_treasury_cashback_balance(): u64 acquires LottoRegistry {
-        let treasury = get_treasury_details();
-        treasury.cashback_balance
-    }
-
-    #[test_only]
-    public fun get_treasury_take_rate_balance(): u64 acquires LottoRegistry {
-        let treasury = get_treasury_details();
-        treasury.take_rate_balance
-    }
-
-    #[test_only]
-    public fun get_treasury_total_balance(): u64 acquires LottoRegistry {
-        let treasury = get_treasury_details();
-        treasury.total_balance
-    }
-
-    #[test_only]
-    public fun get_pot_details_field(pot_id: String, field: u8): u64 acquires LottoRegistry, PotDetails {
-        let details = get_pot_details(pot_id);
-        if (field == 1) details.pot_type as u64
-        else if (field == 2) details.pool_type as u64
-        else if (field == 3) details.ticket_price
-        else if (field == 4) details.status as u64
-        else 0
-    }
-
-    #[test_only]
-    public fun get_pot_details_string(pot_id: String): String acquires LottoRegistry, PotDetails {
-        let details = get_pot_details(pot_id);
-        details.pot_id
-    }
+    
     
 
 
@@ -1761,5 +1639,127 @@ module klotto::lotto_pots {
             };
             i += 1;
         };
+    }
+    #[test_only]
+    use aptos_framework::account::{ create_account_for_test };
+    #[test_only]
+    use std::option;
+    #[test_only]
+    use std::string;
+    #[test_only]
+    use aptos_framework::fungible_asset::MintRef;
+
+    #[test_only]
+    struct TestAssetRefs has key {
+        mint_ref: MintRef,
+        metadata: Object<Metadata>,
+    }
+
+    #[test_only]
+    #[lint::allow_unsafe_randomness]
+    public fun init_test(deployer: &signer) {
+        // Create test asset with primary store support
+        let usdt_account = &create_account_for_test(@usdc_asset);
+        let constructor_ref = object::create_named_object(usdt_account, b"TEST_USDC");
+        primary_fungible_store::create_primary_store_enabled_fungible_asset(
+            &constructor_ref,
+            option::some(1000000000),
+            string::utf8(b"Test USDC"),
+            string::utf8(b"TUSDC"),
+            6,
+            string::utf8(b"https://example.com/icon.png"),
+            string::utf8(b"https://example.com")
+        );
+        let metadata = object::object_from_constructor_ref<Metadata>(&constructor_ref);
+        let mint_ref = fungible_asset::generate_mint_ref(&constructor_ref);
+        
+        // Store refs for testing
+        move_to(usdt_account, TestAssetRefs {
+            mint_ref,
+            metadata,
+        });
+        
+        init_module(deployer);
+        let aptos = &create_account_for_test(@aptos_framework);
+        timestamp::set_time_has_started_for_testing(aptos);
+        
+        // Initialize randomness for testing
+        aptos_std::randomness::initialize_for_testing(aptos);
+    }
+
+    #[test_only]
+    public fun get_test_asset_metadata(): Object<Metadata> acquires TestAssetRefs {
+        let refs = borrow_global<TestAssetRefs>(USDC_ASSET);
+        refs.metadata
+    }
+
+    #[test_only]
+    public fun mint_test_tokens(amount: u64): aptos_framework::fungible_asset::FungibleAsset acquires TestAssetRefs {
+        let refs = borrow_global<TestAssetRefs>(USDC_ASSET);
+        aptos_framework::fungible_asset::mint(&refs.mint_ref, amount)
+    }
+
+    #[test_only]
+    #[lint::allow_unsafe_randomness]
+    public fun test_draw_pot(admin: &signer, pot_id: String) acquires LottoRegistry, PotDetails {
+        draw_pot(admin, pot_id);
+    }
+
+    #[test_only]
+    public fun get_pot_prize_pool(pot_id: String): u64 acquires LottoRegistry, PotDetails {
+        let details = get_pot_details(pot_id);
+        details.prize_pool
+    }
+
+    #[test_only]
+    public fun get_pot_status(pot_id: String): u8 acquires LottoRegistry, PotDetails {
+        let details = get_pot_details(pot_id);
+        details.status
+    }
+
+    #[test_only]
+    public fun get_pot_winning_numbers_count(pot_id: String): u64 acquires LottoRegistry, PotDetails {
+        let details = get_pot_details(pot_id);
+        vector::length(&details.winning_numbers)
+    }
+
+    #[test_only]
+    public fun get_treasury_vault_balance(): u64 acquires LottoRegistry {
+        let treasury = get_treasury_details();
+        treasury.vault_balance
+    }
+
+    #[test_only]
+    public fun get_treasury_cashback_balance(): u64 acquires LottoRegistry {
+        let treasury = get_treasury_details();
+        treasury.cashback_balance
+    }
+
+    #[test_only]
+    public fun get_treasury_take_rate_balance(): u64 acquires LottoRegistry {
+        let treasury = get_treasury_details();
+        treasury.take_rate_balance
+    }
+
+    #[test_only]
+    public fun get_treasury_total_balance(): u64 acquires LottoRegistry {
+        let treasury = get_treasury_details();
+        treasury.total_balance
+    }
+
+    #[test_only]
+    public fun get_pot_details_field(pot_id: String, field: u8): u64 acquires LottoRegistry, PotDetails {
+        let details = get_pot_details(pot_id);
+        if (field == 1) details.pot_type as u64
+        else if (field == 2) details.pool_type as u64
+        else if (field == 3) details.ticket_price
+        else if (field == 4) details.status as u64
+        else 0
+    }
+
+    #[test_only]
+    public fun get_pot_details_string(pot_id: String): String acquires LottoRegistry, PotDetails {
+        let details = get_pot_details(pot_id);
+        details.pot_id
     }
 }
