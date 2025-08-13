@@ -166,6 +166,26 @@ module klotto::test_treasury_management {
     }
 
     #[test(_admin = @klotto, klotto = @klotto, _aptos_framework = @aptos_framework)]
+    #[expected_failure(abort_code = 1002, location = klotto::lotto_pots)]
+    fun test_withdraw_cashback_admin_not_super_admin(_admin: &signer, klotto: &signer, _aptos_framework: &signer) {
+        let admin = &create_account_for_test(@admin); // Regular admin from Move.toml
+        let user = &create_account_for_test(@0x123);
+        let aptos = &create_account_for_test(@aptos_framework);
+        timestamp::set_time_has_started_for_testing(aptos);
+        
+        lotto_pots::init_test(klotto);
+        
+        // Add some funds to cashback first
+        let asset_metadata = lotto_pots::get_test_asset_metadata();
+        primary_fungible_store::ensure_primary_store_exists(@0x123, asset_metadata);
+        let tokens = lotto_pots::mint_test_tokens(5000000);
+        aptos_framework::primary_fungible_store::deposit(@0x123, tokens);
+        lotto_pots::add_funds_to_cashback(user, 3000000);
+        
+        lotto_pots::withdraw_from_cashback(admin, 1000000); // Regular admin should also fail
+    }
+
+    #[test(_admin = @klotto, klotto = @klotto, _aptos_framework = @aptos_framework)]
     #[expected_failure(abort_code = 1020, location = klotto::lotto_pots)]
     fun test_insufficient_balance_treasury(_admin: &signer, klotto: &signer, _aptos_framework: &signer) {
         let admin = &create_account_for_test(@klotto);
@@ -188,5 +208,49 @@ module klotto::test_treasury_management {
         lotto_pots::init_test(klotto);
         
         lotto_pots::fund_cashback_from_treasury(admin, 0); // Zero amount
+    }
+
+    #[test(_admin = @klotto, klotto = @klotto, _aptos_framework = @aptos_framework)]
+    #[expected_failure(abort_code = 1002, location = klotto::lotto_pots)]
+    fun test_withdraw_treasury_vault_admin_not_super_admin(_admin: &signer, klotto: &signer, _aptos_framework: &signer) {
+        let admin = &create_account_for_test(@admin); // Regular admin from Move.toml
+        let user = &create_account_for_test(@0x123);
+        let aptos = &create_account_for_test(@aptos_framework);
+        timestamp::set_time_has_started_for_testing(aptos);
+        
+        lotto_pots::init_test(klotto);
+        
+        // Add funds to treasury first
+        let asset_metadata = lotto_pots::get_test_asset_metadata();
+        primary_fungible_store::ensure_primary_store_exists(@0x123, asset_metadata);
+        let tokens = lotto_pots::mint_test_tokens(5000000);
+        aptos_framework::primary_fungible_store::deposit(@0x123, tokens);
+        lotto_pots::add_funds_to_treasury_vault(user, 3000000);
+        
+        lotto_pots::withdraw_funds_from_treasury_vault(admin, 1000000); // Regular admin should fail
+    }
+
+    #[test(_admin = @klotto, klotto = @klotto, _aptos_framework = @aptos_framework)]
+    #[expected_failure(abort_code = 1002, location = klotto::lotto_pots)]
+    fun test_withdraw_take_rate_admin_not_super_admin(_admin: &signer, klotto: &signer, _aptos_framework: &signer) {
+        let admin = &create_account_for_test(@admin); // Regular admin from Move.toml
+        let aptos = &create_account_for_test(@aptos_framework);
+        timestamp::set_time_has_started_for_testing(aptos);
+        
+        lotto_pots::init_test(klotto);
+        
+        // Setup pot and move funds to take_rate
+        let asset_metadata = lotto_pots::get_test_asset_metadata();
+        primary_fungible_store::ensure_primary_store_exists(@klotto, asset_metadata);
+        let tokens = lotto_pots::mint_test_tokens(10000000);
+        aptos_framework::primary_fungible_store::deposit(@klotto, tokens);
+        lotto_pots::add_funds_to_treasury_vault(&create_account_for_test(@klotto), 8000000);
+        
+        let current_time = timestamp::now_seconds();
+        lotto_pots::create_pot(&create_account_for_test(@klotto), string::utf8(b"test_pot"), 1, 1, 1000000, current_time + 86400);
+        lotto_pots::fund_pot_from_treasury(&create_account_for_test(@klotto), string::utf8(b"test_pot"), 5000000);
+        lotto_pots::move_pot_funds_to_take_rate(&create_account_for_test(@klotto), string::utf8(b"test_pot"), 3000000);
+        
+        lotto_pots::withdraw_from_take_rate(admin, @0x999, 1000000); // Regular admin should fail
     }
 }
