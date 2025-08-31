@@ -129,6 +129,42 @@ module klotto::audit_fixes_test {
     }
 
     #[test(_admin = @klotto, klotto = @klotto, _aptos_framework = @aptos_framework)]
+    #[expected_failure(abort_code = 1002, location = klotto::lotto_pots)]
+    #[lint::allow_unsafe_randomness]
+    public fun test_kpo6_transfer_cashback_requires_super_admin(_admin: &signer, klotto: &signer, _aptos_framework: &signer) {
+        // KPO-6: Test that transfer_cashback_to_wallet requires super_admin when admin = recipient
+        let aptos = &create_account_for_test(@aptos_framework);
+        timestamp::set_time_has_started_for_testing(aptos);
+        
+        lotto_pots::init_test(klotto);
+        
+        // Update admin to non-super-admin
+        lotto_pots::update_admin(klotto, @0x999);
+        
+        let non_super_admin = &create_account_for_test(@0x999);
+        
+        // This should fail because non-super-admin tries to transfer cashback to themselves
+        lotto_pots::transfer_cashback_to_wallet(non_super_admin, non_super_admin, 1000000);
+    }
+
+    #[test(_admin = @klotto, klotto = @klotto, _aptos_framework = @aptos_framework)]
+    #[expected_failure(abort_code = 1022, location = klotto::lotto_pots)]
+    #[lint::allow_unsafe_randomness]
+    public fun test_kpo6_transfer_cashback_exceeds_threshold(_admin: &signer, klotto: &signer, _aptos_framework: &signer) {
+        // KPO-6: Test that transfer_cashback_to_wallet validates amount against threshold
+        let aptos = &create_account_for_test(@aptos_framework);
+        timestamp::set_time_has_started_for_testing(aptos);
+        
+        lotto_pots::init_test(klotto);
+        
+        let recipient = &create_account_for_test(@0x456);
+        let threshold = lotto_pots::get_cashback_claim_threshold();
+        
+        // This should fail because amount >= threshold
+        lotto_pots::transfer_cashback_to_wallet(recipient, klotto, threshold);
+    }
+
+    #[test(_admin = @klotto, klotto = @klotto, _aptos_framework = @aptos_framework)]
     #[expected_failure(abort_code = 1012, location = klotto::lotto_pots)]
     #[lint::allow_unsafe_randomness]
     public fun test_kpo7_cancel_pot_logical_error_fix(_admin: &signer, klotto: &signer, _aptos_framework: &signer) {
