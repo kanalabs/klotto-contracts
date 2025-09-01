@@ -102,6 +102,7 @@ module klotto::lotto_pots {
         winning_claim_threshold: u64,
         cashback_claim_threshold: u64,
         super_admin: address,
+        pending_super_admin: address,
         admin: address,
         vault: Object<FungibleStore>,
         cashback: Object<FungibleStore>,
@@ -131,21 +132,6 @@ module klotto::lotto_pots {
         refunds: BigOrderedMap<address, u64>,
         winning_numbers: vector<u8>,
         cancellation_total: u64
-    }
-
-    struct ClaimEntry has copy, drop, store {
-        user_address: address,
-        ticket_count: u64,
-    }
-
-    struct RefundDetails has copy, drop, store {
-        user_address: address,
-        amount: u64,
-    }
-
-    struct WinnerDetails has copy, drop, store {
-        user_address: address,
-        amount: u64,
     }
 
     struct ClaimDetails has copy, drop, store {
@@ -404,6 +390,7 @@ module klotto::lotto_pots {
                 winning_claim_threshold: INITIAL_CLAIM_THRESHOLD,
                 cashback_claim_threshold: INITIAL_CLAIM_THRESHOLD,
                 super_admin: deployer_address, // @klotto is the super admin
+                pending_super_admin: deployer_address,
                 admin: @admin, // Initial admin is also @klotto
                 vault,
                 cashback,
@@ -450,22 +437,44 @@ module klotto::lotto_pots {
             timestamp: timestamp::now_seconds(),
         });
     }
-    // KPO-3 update_super_admin Missing Modification Function
-    public entry fun update_super_admin(
+
+    public entry fun transfer_super_admin(
         super_admin_signer: &signer,
         new_super_admin_address: address,
     ) acquires LottoRegistry {
         assert_is_super_admin(super_admin_signer);
+        assert!(signer::address_of(super_admin_signer) != new_super_admin_address, EINVALID_AMOUNT);
 
         let registry_addr = lotto_address();
         let config = borrow_global_mut<LottoRegistry>(registry_addr);
+        config.pending_super_admin = new_super_admin_address;
+
+        event::emit(AdminUpdatedEvent {
+            old_admin: config.super_admin,
+            new_admin: new_super_admin_address,
+            updated_by: signer::address_of(super_admin_signer),
+            timestamp: timestamp::now_seconds(),
+        });
+    }
+
+    public entry fun accept_super_admin(
+        pending_super_admin_signer: &signer,
+    ) acquires LottoRegistry {
+        let registry_addr = lotto_address();
+        let config = borrow_global_mut<LottoRegistry>(registry_addr);
+        assert!(
+            signer::address_of(pending_super_admin_signer) == config.pending_super_admin,
+            ENOT_SUPER_ADMIN
+        );
+
         let old_super_admin = config.super_admin;
-        config.super_admin = new_super_admin_address;
+        config.super_admin = config.pending_super_admin;
+        config.pending_super_admin = @0x0;
 
         event::emit(AdminUpdatedEvent {
             old_admin: old_super_admin,
-            new_admin: new_super_admin_address,
-            updated_by: signer::address_of(super_admin_signer),
+            new_admin: config.super_admin,
+            updated_by: config.super_admin,
             timestamp: timestamp::now_seconds(),
         });
     }
@@ -512,7 +521,6 @@ module klotto::lotto_pots {
         });
     }
 
-    // KPO-4 create_pot Missing Range Check
     public entry fun create_pot(
         admin: &signer,
         pot_id: String,
@@ -598,7 +606,6 @@ module klotto::lotto_pots {
         let pot_details = borrow_global<PotDetails>(pot_address);
         assert!(pot_details.status == STATUS_ACTIVE, EPOT_NOT_ACTIVE);
         assert!(ticket_count == all_numbers.length(), EINVALID_TICKET_COUNT);
-        // KPO-8 purchase_tickets Missing Range Validation
         assert!(pot_details.pot_type >= 1 && pot_details.pot_type <= 4, EINVALID_POT_TYPE);
         assert!(ticket_count > 0 && ticket_count <= 100, EINVALID_TICKET_COUNT);
         assert!(now < pot_details.scheduled_draw_time, EDRAW_TIME_ALREADY_REACHED);
@@ -699,7 +706,6 @@ module klotto::lotto_pots {
     }
 
     // Draw the winning numbers for a pot
-    // KPO-1 --> removed public (friend). This function must not be callable by anyone other than admin
     #[randomness]
     entry fun draw_pot(
         admin: &signer,
@@ -789,7 +795,6 @@ module klotto::lotto_pots {
             assert!(prize_amount > 0, EINVALID_AMOUNT);
 
             let is_claimable_initially = prize_amount <= winning_claim_threshold;
-            // KPO-5: announce_winners_batch Logical Error
             if (pot_details.winners.contains(&winner_addr)) {
                 // If the winner already exists, ignore and continue to next
                 i += 1;
@@ -1141,7 +1146,6 @@ module klotto::lotto_pots {
         amount: u64
     ) acquires LottoRegistry {
         let recipient_addr = signer::address_of(recipient); // Get recipient's address from their signer
-        // KPO-6 transfer_cashback_to_wallet Permission Restriction Error
         if (signer::address_of(admin) == recipient_addr) {
             assert_is_super_admin(admin);
         } else {
@@ -1185,7 +1189,6 @@ module klotto::lotto_pots {
         assert!(exists_pot(pot_id), EPOT_NOT_FOUND);
         let pot_address = get_pot_address(pot_id);
         let pot_details = borrow_global_mut<PotDetails>(pot_address);
-        // KPO-7 cancel_pot Logical Error
         assert!(
             pot_details.status != STATUS_CANCELLED,
             EPOT_ALREADY_CANCELLED
@@ -1228,7 +1231,6 @@ module klotto::lotto_pots {
         let total_refund_required = 0;
         let emitted_refund_user_addresses = vector::empty<address>(); // For event
         let emitted_refund_amounts = vector::empty<u64>();       // For event
-        // KPO-9 insert_batch_refunds Balance verification Should Be Done In Advance
 
         let i = 0;
         while (i < batch_size) {
@@ -1321,7 +1323,6 @@ module klotto::lotto_pots {
         });
     }
 
-    // KPO-10 fund_pot_from_treasury And withdraw_funds_from_treasury_vault Parameters Not Checked
     // Move funds from treasury to pot
     public entry fun fund_pot_from_treasury(
         admin: &signer,
@@ -1358,7 +1359,6 @@ module klotto::lotto_pots {
         });
     }
 
-    // KPO-10 fund_pot_from_treasury Andwithdraw_funds_from_treasury_vault Parameters Not Checked
     // Withdraw funds from treasury
     public entry fun withdraw_funds_from_treasury_vault(
         admin: &signer,

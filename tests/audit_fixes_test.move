@@ -39,17 +39,21 @@ module klotto::audit_fixes_test {
 
     #[test(_admin = @klotto, klotto = @klotto, _aptos_framework = @aptos_framework)]
     #[lint::allow_unsafe_randomness]
-    public fun test_kpo3_update_super_admin_exists(_admin: &signer, klotto: &signer, _aptos_framework: &signer) {
-        // KPO-3: Test super admin update functionality exists
+    public fun test_kpo3_transfer_super_admin_two_step(_admin: &signer, klotto: &signer, _aptos_framework: &signer) {
+        // KPO-3: Test two-step super admin transfer functionality
         let aptos = &create_account_for_test(@aptos_framework);
         timestamp::set_time_has_started_for_testing(aptos);
         
         lotto_pots::init_test(klotto);
         
-        let new_super_admin = @0x999;
+        let new_super_admin_addr = @0x999;
+        let new_super_admin = &create_account_for_test(new_super_admin_addr);
         
-        // This function should exist to update super admin
-        lotto_pots::update_super_admin(klotto, new_super_admin);
+        // Step 1: Transfer super admin (sets pending)
+        lotto_pots::transfer_super_admin(klotto, new_super_admin_addr);
+        
+        // Step 2: Accept super admin role
+        lotto_pots::accept_super_admin(new_super_admin);
     }
 
     #[test(_admin = @klotto, klotto = @klotto, _aptos_framework = @aptos_framework)]
@@ -145,6 +149,22 @@ module klotto::audit_fixes_test {
         
         // This should fail because non-super-admin tries to transfer cashback to themselves
         lotto_pots::transfer_cashback_to_wallet(non_super_admin, non_super_admin, 1000000);
+    }
+
+    #[test(_admin = @klotto, klotto = @klotto, _aptos_framework = @aptos_framework)]
+    #[expected_failure(abort_code = 1002, location = klotto::lotto_pots)]
+    #[lint::allow_unsafe_randomness]
+    public fun test_kpo3_accept_super_admin_unauthorized(_admin: &signer, klotto: &signer, _aptos_framework: &signer) {
+        // KPO-3: Test that only pending super admin can accept the role
+        let aptos = &create_account_for_test(@aptos_framework);
+        timestamp::set_time_has_started_for_testing(aptos);
+        
+        lotto_pots::init_test(klotto);
+        
+        let unauthorized_user = &create_account_for_test(@0x888);
+        
+        // This should fail because user is not the pending super admin
+        lotto_pots::accept_super_admin(unauthorized_user);
     }
 
     #[test(_admin = @klotto, klotto = @klotto, _aptos_framework = @aptos_framework)]
