@@ -33,12 +33,16 @@ module klotto::lotto_pots {
     const EALREADY_CLAIMED: u64 = 1009;
     /// No prize amount available for claiming.
     const ENO_PRIZE_AMOUNT: u64 = 1010;
+    /// The pot has already been cancelled.
+    const EPOT_ALREADY_CANCELLED: u64 = 1012;
     /// Invalid input vector length (e.g., ticket count mismatch with numbers provided).
     const EINVALID_INPUT_LENGTH: u64 = 1013;
     /// Batch size exceeds the maximum allowed.
     const EBATCH_TOO_LARGE: u64 = 1014;
     /// Invalid number of tickets provided for purchase or refund.
     const EINVALID_TICKET_COUNT: u64 = 1016;
+    /// Invalid pool type specified.
+    const EINVALID_POOL_TYPE: u64 = 1017;
     /// Invalid pot type specified.
     const EINVALID_POT_TYPE: u64 = 1018;
     /// Invalid lottery numbers (e.g., out of range, duplicates for white balls).
@@ -55,6 +59,7 @@ module klotto::lotto_pots {
     const ECLAIM_NOT_ENABLED: u64 = 1027;
     /// The draw time for the pot has already been reached.
     const EDRAW_TIME_ALREADY_REACHED: u64 = 1011;
+
 
     // ====== Pot Types ======
     const POT_TYPE_DAILY: u8 = 1;
@@ -95,7 +100,9 @@ module klotto::lotto_pots {
     struct LottoRegistry has key {
         pots: BigOrderedMap<String, address>,
         winning_claim_threshold: u64,
+        cashback_claim_threshold: u64,
         super_admin: address,
+        pending_super_admin: address,
         admin: address,
         vault: Object<FungibleStore>,
         cashback: Object<FungibleStore>,
@@ -125,21 +132,6 @@ module klotto::lotto_pots {
         refunds: BigOrderedMap<address, u64>,
         winning_numbers: vector<u8>,
         cancellation_total: u64
-    }
-
-    struct ClaimEntry has copy, drop, store {
-        user_address: address,
-        ticket_count: u64,
-    }
-
-    struct RefundDetails has copy, drop, store {
-        user_address: address,
-        amount: u64,
-    }
-
-    struct WinnerDetails has copy, drop, store {
-        user_address: address,
-        amount: u64,
     }
 
     struct ClaimDetails has copy, drop, store {
@@ -335,6 +327,13 @@ module klotto::lotto_pots {
     }
 
     #[event]
+    struct SuperAdminUpdatedEvent has drop, store {
+        old_admin: address,
+        new_admin: address,
+        updated_by: address,
+        timestamp: u64,
+    }
+    #[event]
     struct AdminUpdatedEvent has drop, store {
         old_admin: address,
         new_admin: address,
@@ -353,8 +352,6 @@ module klotto::lotto_pots {
         winner_addresses: vector<address>,
         prize_amounts: vector<u64>
     }
-    
-    
 
 
     // Initialize the module, acting as a constructor
@@ -398,7 +395,9 @@ module klotto::lotto_pots {
             LottoRegistry {
                 pots: big_ordered_map::new_with_config(128, 1024, true),
                 winning_claim_threshold: INITIAL_CLAIM_THRESHOLD,
+                cashback_claim_threshold: INITIAL_CLAIM_THRESHOLD,
                 super_admin: deployer_address, // @klotto is the super admin
+                pending_super_admin: deployer_address,
                 admin: @admin, // Initial admin is also @klotto
                 vault,
                 cashback,
@@ -446,6 +445,41 @@ module klotto::lotto_pots {
         });
     }
 
+    public entry fun transfer_super_admin(
+        super_admin_signer: &signer,
+        new_super_admin_address: address,
+    ) acquires LottoRegistry {
+        assert_is_super_admin(super_admin_signer);
+        assert!(signer::address_of(super_admin_signer) != new_super_admin_address, EINVALID_AMOUNT);
+
+        let registry_addr = lotto_address();
+        let config = borrow_global_mut<LottoRegistry>(registry_addr);
+        config.pending_super_admin = new_super_admin_address;
+
+    }
+
+    public entry fun accept_super_admin(
+        pending_super_admin_signer: &signer,
+    ) acquires LottoRegistry {
+        let registry_addr = lotto_address();
+        let config = borrow_global_mut<LottoRegistry>(registry_addr);
+        assert!(
+            signer::address_of(pending_super_admin_signer) == config.pending_super_admin,
+            ENOT_SUPER_ADMIN
+        );
+
+        let old_super_admin = config.super_admin;
+        config.super_admin = config.pending_super_admin;
+        config.pending_super_admin = @0x0;
+
+        event::emit(SuperAdminUpdatedEvent {
+            old_admin: old_super_admin,
+            new_admin: config.super_admin,
+            updated_by: config.super_admin,
+            timestamp: timestamp::now_seconds(),
+        });
+    }
+
     // New function to update the admin claim threshold
     public entry fun update_winning_claim_threshold(
         admin: &signer,
@@ -467,6 +501,27 @@ module klotto::lotto_pots {
         });
     }
 
+    // New function to update the admin claim threshold
+    public entry fun update_cashback_claim_threshold(
+        admin: &signer,
+        new_threshold: u64
+    ) acquires LottoRegistry {
+        let admin_address = signer::address_of(admin);
+        assert_is_admin(admin);
+        let registry_addr = lotto_address();
+        let config = borrow_global_mut<LottoRegistry>(registry_addr);
+        let old_threshold = config.cashback_claim_threshold;
+
+        config.cashback_claim_threshold = new_threshold;
+
+        event::emit(AdminClaimThresholdUpdated {
+            old_threshold,
+            new_threshold,
+            updated_by: admin_address,
+            timestamp: timestamp::now_seconds(),
+        });
+    }
+
     public entry fun create_pot(
         admin: &signer,
         pot_id: String,
@@ -478,6 +533,9 @@ module klotto::lotto_pots {
         // Validate inputs and permissions
         let admin_address = signer::address_of(admin);
         assert_is_admin(admin);
+        assert!(ticket_price > 0, EINVALID_AMOUNT);
+        assert!(pool_type == POOL_TYPE_FIXED || pool_type == POOL_TYPE_DYNAMIC, EINVALID_POOL_TYPE);
+        assert!(timestamp::now_seconds() < scheduled_draw_time, EDRAW_TIME_ALREADY_REACHED);
         assert!(
             pot_type == POT_TYPE_DAILY ||
                 pot_type == POT_TYPE_BIWEEKLY ||
@@ -549,7 +607,7 @@ module klotto::lotto_pots {
         let pot_details = borrow_global<PotDetails>(pot_address);
         assert!(pot_details.status == STATUS_ACTIVE, EPOT_NOT_ACTIVE);
         assert!(ticket_count == all_numbers.length(), EINVALID_TICKET_COUNT);
-        assert!(pot_details.pot_type <= 4, EINVALID_POT_TYPE);
+        assert!(pot_details.pot_type >= 1 && pot_details.pot_type <= 4, EINVALID_POT_TYPE);
         assert!(ticket_count > 0 && ticket_count <= 100, EINVALID_TICKET_COUNT);
         assert!(now < pot_details.scheduled_draw_time, EDRAW_TIME_ALREADY_REACHED);
         // Validate input for each set of numbers
@@ -650,7 +708,7 @@ module klotto::lotto_pots {
 
     // Draw the winning numbers for a pot
     #[randomness]
-    public(friend) entry fun draw_pot(
+    entry fun draw_pot(
         admin: &signer,
         pot_id: String
     ) acquires LottoRegistry, PotDetails {
@@ -738,9 +796,9 @@ module klotto::lotto_pots {
             assert!(prize_amount > 0, EINVALID_AMOUNT);
 
             let is_claimable_initially = prize_amount <= winning_claim_threshold;
-
             if (pot_details.winners.contains(&winner_addr)) {
                 // If the winner already exists, ignore and continue to next
+                i += 1;
                 continue;
             };
             pot_details.winners.add(winner_addr, ClaimDetails {
@@ -1089,13 +1147,15 @@ module klotto::lotto_pots {
         amount: u64
     ) acquires LottoRegistry {
         let recipient_addr = signer::address_of(recipient); // Get recipient's address from their signer
-
-        assert_is_admin(admin);
-        assert!(amount > 0, EINVALID_AMOUNT);
+        if (signer::address_of(admin) == recipient_addr) {
+            assert_is_super_admin(admin);
+        } else {
+            assert_is_admin(admin);
+        };
         let registry_addr = lotto_address();
         let registry = borrow_global<LottoRegistry>(registry_addr);
         let registry_signer = object::generate_signer_for_extending(&registry.extend_ref);
-
+        assert!(amount > 0 && amount < registry.cashback_claim_threshold, EINVALID_AMOUNT);
         let cashback_balance = fungible_asset::balance(registry.cashback);
         assert!(cashback_balance >= amount, EINSUFFICIENT_BALANCE);
 
@@ -1130,9 +1190,12 @@ module klotto::lotto_pots {
         assert!(exists_pot(pot_id), EPOT_NOT_FOUND);
         let pot_address = get_pot_address(pot_id);
         let pot_details = borrow_global_mut<PotDetails>(pot_address);
-
         assert!(
-            pot_details.status != STATUS_CANCELLATION_IN_PROGRESS || pot_details.status != STATUS_CANCELLED,
+            pot_details.status != STATUS_CANCELLED,
+            EPOT_ALREADY_CANCELLED
+        );
+        assert!(
+            pot_details.status != STATUS_CANCELLATION_IN_PROGRESS,
             EINVALID_STATUS
         );
 
@@ -1162,13 +1225,22 @@ module klotto::lotto_pots {
 
         let batch_size = refund_user_addresses.length();
         assert!(batch_size <= MAX_BATCH_SIZE, EBATCH_TOO_LARGE);
+
         pot_details.status = STATUS_CANCELLATION_IN_PROGRESS;
 
         let total_refund_amount = 0;
+        let total_refund_required = 0;
         let emitted_refund_user_addresses = vector::empty<address>(); // For event
         let emitted_refund_amounts = vector::empty<u64>();       // For event
 
         let i = 0;
+        while (i < batch_size) {
+            total_refund_required += refund_ticket_counts[i] * pot_details.ticket_price;
+            i += 1;
+        };
+        assert!(fungible_asset::balance(pot_details.prize_store) >= total_refund_required, EINSUFFICIENT_BALANCE);
+        i = 0;
+
         while (i < batch_size) {
             let user_address = refund_user_addresses[i];
             let num_tickets = refund_ticket_counts[i];
@@ -1260,13 +1332,14 @@ module klotto::lotto_pots {
     ) acquires LottoRegistry, PotDetails {
         let admin_addr = signer::address_of(admin);
         assert_is_admin(admin);
-
+        assert!(amount > 0, EINVALID_AMOUNT);
         let pot_address = get_pot_address(pot_id);
         let pot_details = borrow_global<PotDetails>(pot_address);
         let pot_store = pot_details.prize_store;
         let registry_addr = lotto_address();
 
         let registry = borrow_global_mut<LottoRegistry>(registry_addr);
+        assert!(fungible_asset::balance(registry.vault) >= amount, EINSUFFICIENT_BALANCE);
         let registry_signer = object::generate_signer_for_extending(&registry.extend_ref);
 
         let usdt = dispatchable_fungible_asset::withdraw(
@@ -1292,13 +1365,14 @@ module klotto::lotto_pots {
         admin: &signer,
         amount: u64
     ) acquires LottoRegistry {
+        assert!(amount > 0, EINVALID_AMOUNT);
         let admin_addr = signer::address_of(admin);
         assert_is_super_admin(admin);
         let registry_addr = lotto_address();
 
         let registry = borrow_global_mut<LottoRegistry>(registry_addr);
         let registry_signer = object::generate_signer_for_extending(&registry.extend_ref);
-
+        assert!(fungible_asset::balance(registry.vault) >= amount, EINSUFFICIENT_BALANCE);
         let usdc = dispatchable_fungible_asset::withdraw(
             &registry_signer, // LottoRegistry object signs the withdrawal from its vault
             registry.vault,
@@ -1615,6 +1689,12 @@ module klotto::lotto_pots {
     }
 
     #[view]
+    public fun get_cashback_claim_threshold(): u64 acquires LottoRegistry {
+        let registry_addr = lotto_address();
+        borrow_global<LottoRegistry>(registry_addr).cashback_claim_threshold
+    }
+
+    #[view]
     // Get the address of the KACHING
     public fun lotto_address(): address {
         object::create_object_address(&@klotto, LOTTO_SYMBOL)
@@ -1640,6 +1720,7 @@ module klotto::lotto_pots {
             i += 1;
         };
     }
+
     #[test_only]
     use aptos_framework::account::{ create_account_for_test };
     #[test_only]
@@ -1672,17 +1753,17 @@ module klotto::lotto_pots {
         );
         let metadata = object::object_from_constructor_ref<Metadata>(&constructor_ref);
         let mint_ref = fungible_asset::generate_mint_ref(&constructor_ref);
-        
+
         // Store refs for testing
         move_to(usdt_account, TestAssetRefs {
             mint_ref,
             metadata,
         });
-        
+
         init_module(deployer);
         let aptos = &create_account_for_test(@aptos_framework);
         timestamp::set_time_has_started_for_testing(aptos);
-        
+
         // Initialize randomness for testing
         aptos_std::randomness::initialize_for_testing(aptos);
     }
