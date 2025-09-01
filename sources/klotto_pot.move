@@ -449,12 +449,6 @@ module klotto::lotto_pots {
         let config = borrow_global_mut<LottoRegistry>(registry_addr);
         config.pending_super_admin = new_super_admin_address;
 
-        event::emit(AdminUpdatedEvent {
-            old_admin: config.super_admin,
-            new_admin: new_super_admin_address,
-            updated_by: signer::address_of(super_admin_signer),
-            timestamp: timestamp::now_seconds(),
-        });
     }
 
     public entry fun accept_super_admin(
