@@ -327,6 +327,13 @@ module klotto::lotto_pots {
     }
 
     #[event]
+    struct SuperAdminUpdatedEvent has drop, store {
+        old_admin: address,
+        new_admin: address,
+        updated_by: address,
+        timestamp: u64,
+    }
+    #[event]
     struct AdminUpdatedEvent has drop, store {
         old_admin: address,
         new_admin: address,
@@ -465,7 +472,7 @@ module klotto::lotto_pots {
         config.super_admin = config.pending_super_admin;
         config.pending_super_admin = @0x0;
 
-        event::emit(AdminUpdatedEvent {
+        event::emit(SuperAdminUpdatedEvent {
             old_admin: old_super_admin,
             new_admin: config.super_admin,
             updated_by: config.super_admin,
