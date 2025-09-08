@@ -1195,7 +1195,7 @@ module klotto::lotto_pots {
             EPOT_ALREADY_CANCELLED
         );
         assert!(
-            pot_details.status != STATUS_CANCELLATION_IN_PROGRESS,
+            pot_details.status == STATUS_CANCELLATION_IN_PROGRESS,
             EINVALID_STATUS
         );
 
