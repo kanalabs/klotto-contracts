@@ -274,8 +274,24 @@ module klotto::lotto_pots {
         refund_amounts: vector<u64>
     }
 
-    #[event]
+    #[event]// Needs to remove
     struct FundsAdded has drop, store {
+        depositor: address,
+        amount: u64,
+        new_balance: u64,
+        timestamp: u64,
+        success: bool
+    }
+    #[event]
+    struct FundsAddedToCashBack has drop, store {
+        depositor: address,
+        amount: u64,
+        new_balance: u64,
+        timestamp: u64,
+        success: bool
+    }
+        #[event]
+    struct FundsAddedToTreasuryVault has drop, store {
         depositor: address,
         amount: u64,
         new_balance: u64,
@@ -1027,7 +1043,7 @@ module klotto::lotto_pots {
 
         dispatchable_fungible_asset::deposit(registry.cashback, usdt);
 
-        event::emit(FundsAdded {
+        event::emit(FundsAddedToCashBack {
             depositor: user_addr,
             amount,
             new_balance: fungible_asset::balance(registry.cashback),
@@ -1315,7 +1331,7 @@ module klotto::lotto_pots {
 
         dispatchable_fungible_asset::deposit(registry.vault, usdt); // Deposit to registry's vault
 
-        event::emit(FundsAdded {
+        event::emit(FundsAddedToTreasuryVault {
             depositor: user_addr,
             amount,
             new_balance: fungible_asset::balance(registry.vault),
