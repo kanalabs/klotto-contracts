@@ -310,6 +310,18 @@ module klotto::lotto_pots {
     }
 
     #[event]
+    struct FundsMovedToTakeRateFromPot has drop, store {
+        admin: address,
+        pot_id: String,
+        pool_type: u8,
+        pot_type: u8,
+        amount: u64,
+        timestamp: u64,
+        pot_address: address,
+        success: bool
+    }
+
+    #[event]
     struct FundsMovedToCashbackFromTreasury has drop, store {
         admin: address,
         amount: u64,
@@ -1146,9 +1158,11 @@ module klotto::lotto_pots {
         );
         dispatchable_fungible_asset::deposit(registry.take_rate, usdt); // Deposit to registry's take_rate
 
-        event::emit(FundsMovedToPot {
+        event::emit(FundsMovedToTakeRateFromPot {
             admin: admin_addr,
             pot_id: copy pot_id,
+            pool_type: pot_details.pool_type,
+            pot_type: pot_details.pot_type,
             amount,
             timestamp: timestamp::now_seconds(),
             pot_address,
