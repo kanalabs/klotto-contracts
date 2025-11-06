@@ -198,11 +198,22 @@ module klotto::lotto_pots {
         success: bool
     }
 
-    #[event]
+    #[event]// Needs to remove
     struct PotDrawnEvent has drop, store {
         pot_id: String,
         draw_time: u64,
         winning_numbers: vector<u8>,
+        pot_address: address,
+        success: bool
+    }
+
+    #[event]
+    struct PotDrawEvent has drop, store {
+        pot_id: String,
+        draw_time: u64,
+        winning_numbers: vector<u8>,
+        white_balls: vector<u64>,
+        powerball: u64,
         pot_address: address,
         success: bool
     }
@@ -768,14 +779,25 @@ module klotto::lotto_pots {
         let powerball_random = randomness::u64_integer();
         let powerball_num = ((powerball_random % (POWERBALL_MAX as u64)) as u8) + 1;
 
-        white_balls.push_back(powerball_num);
-        pot_details.winning_numbers = white_balls;
+        let all_numbers = copy white_balls;
+        all_numbers.push_back(powerball_num);
+        pot_details.winning_numbers = all_numbers;
+
+        // Convert to u64 for readable display
+        let white_balls_readable = vector::empty<u64>();
+        let i = 0;
+        while (i < white_balls.length()) {
+            white_balls_readable.push_back((white_balls[i] as u64));
+            i += 1;
+        };
 
         event::emit(
-            PotDrawnEvent {
-                pot_id: copy pot_id,
+            PotDrawEvent {
+                pot_id: pot_id,
                 draw_time: current_time,
-                winning_numbers: white_balls,
+                winning_numbers: all_numbers,
+                white_balls :white_balls_readable,
+                powerball: (powerball_num as u64),
                 pot_address,
                 success: true
             }
@@ -1678,6 +1700,26 @@ module klotto::lotto_pots {
             EINVALID_STATUS
         );
         pot_details.winning_numbers
+    }
+
+    #[view]
+    public fun get_winning_numbers_readable(pot_id: String): (vector<u64>, u64) acquires LottoRegistry, PotDetails {
+        let pot_address = get_pot_address(pot_id);
+        let pot_details = borrow_global<PotDetails>(pot_address);
+        assert!(
+            pot_details.status == STATUS_DRAWN ||
+                pot_details.status == STATUS_COMPLETED,
+            EINVALID_STATUS
+        );
+        let numbers = pot_details.winning_numbers;
+        let white_balls = vector::empty<u64>();
+        let i = 0;
+        while (i < 5) {
+            white_balls.push_back((numbers[i] as u64));
+            i += 1;
+        };
+        let powerball = (numbers[5] as u64);
+        (white_balls, powerball)
     }
 
     #[view]
