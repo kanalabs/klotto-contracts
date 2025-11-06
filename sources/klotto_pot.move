@@ -212,8 +212,8 @@ module klotto::lotto_pots {
         pot_id: String,
         draw_time: u64,
         winning_numbers: vector<u8>,
-        white_balls: vector<u64>,
-        powerball: u64,
+        winning_white_balls: vector<u64>,
+        winning_redball: u64,
         pot_address: address,
         success: bool
     }
@@ -796,8 +796,8 @@ module klotto::lotto_pots {
                 pot_id: pot_id,
                 draw_time: current_time,
                 winning_numbers: all_numbers,
-                white_balls :white_balls_readable,
-                powerball: (powerball_num as u64),
+                winning_white_balls :white_balls_readable,
+                winning_redball: (powerball_num as u64),
                 pot_address,
                 success: true
             }
