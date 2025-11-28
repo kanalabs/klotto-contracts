@@ -230,4 +230,39 @@ module klotto::test_discount_functionality {
         let prize_pool = lotto_pots::get_pot_prize_pool(pot_id);
         assert!(prize_pool == 500, 5);
     }
+
+    #[test]
+    fun test_create_pot_with_discount() {
+        let deployer = &create_account_for_test(@klotto);
+        let admin = &create_account_for_test(@admin);
+        init_test(deployer);
+
+        // Create pot with discount in one call
+        let pot_id = string::utf8(b"test_pot_7");
+        let future_time = timestamp::now_seconds() + 3600;
+        let min_tickets = vector[1, 10];
+        let max_tickets = vector[9, 20];
+        let prices_per_ticket = vector[90, 50];
+        let tier_active_flags = vector[true, true];
+
+        lotto_pots::create_pot_with_discount(
+            admin,
+            pot_id,
+            1, // pot_type
+            1, // pool_type
+            100, // ticket_price
+            future_time,
+            true, // is_enabled
+            min_tickets,
+            max_tickets,
+            prices_per_ticket,
+            tier_active_flags
+        );
+
+        // Verify pot exists and discount is configured
+        assert!(lotto_pots::exists_pot(pot_id), 6);
+        let (is_enabled, tiers) = get_pot_discount_config(pot_id);
+        assert!(is_enabled, 7);
+        assert!(tiers.length() == 2, 8);
+    }
 }

@@ -681,6 +681,32 @@ module klotto::lotto_pots {
         });
     }
 
+    // Create pot with discount configuration in one atomic operation
+    public entry fun create_pot_with_discount(
+        admin: &signer,
+        pot_id: String,
+        pot_type: u8,
+        pool_type: u8,
+        ticket_price: u64,
+        scheduled_draw_time: u64,
+        is_enabled: bool,
+        min_tickets: vector<u64>,
+        max_tickets: vector<u64>,
+        prices_per_ticket: vector<u64>,
+        tier_active_flags: vector<bool>
+    ) acquires LottoRegistry, PotDiscountConfig {
+        assert!(validate_discount_tiers(&min_tickets, &max_tickets, &tier_active_flags), EINVALID_DISCOUNT_TIER);
+        create_pot(admin, pot_id, pot_type, pool_type, ticket_price, scheduled_draw_time);
+        configure_pot_discount(
+            admin,
+            pot_id,
+            is_enabled,
+            min_tickets,
+            max_tickets,
+            prices_per_ticket,
+            tier_active_flags
+        );
+    }
 
     // Purchase tickets for a pot
     public entry fun purchase_tickets(
@@ -751,9 +777,6 @@ module klotto::lotto_pots {
         assert_is_admin(admin);
         assert!(exists_pot(pot_id), EPOT_NOT_FOUND);
 
-        let pot_address = get_pot_address(pot_id);
-        let discount_config = borrow_global_mut<PotDiscountConfig>(pot_address);
-
         // Validate input lengths match
         let tier_count = min_tickets.length();
         assert!(
@@ -762,6 +785,12 @@ module klotto::lotto_pots {
                 tier_count == tier_active_flags.length(),
             EINVALID_INPUT_LENGTH
         );
+
+        // Validate no overlapping ranges
+        assert!(validate_discount_tiers(&min_tickets, &max_tickets, &tier_active_flags), EINVALID_DISCOUNT_TIER);
+
+        let pot_address = get_pot_address(pot_id);
+        let discount_config = borrow_global_mut<PotDiscountConfig>(pot_address);
 
         // Clear existing tiers and set new configuration
         discount_config.tiers = vector::empty<DiscountTier>();
@@ -784,9 +813,6 @@ module klotto::lotto_pots {
             discount_config.tiers.push_back(tier);
             i += 1;
         };
-
-        // Validate no overlapping ranges
-        assert!(validate_discount_tiers(&discount_config.tiers), EINVALID_DISCOUNT_TIER);
 
         event::emit(PotDiscountConfiguredEvent {
             pot_id,
@@ -852,24 +878,31 @@ module klotto::lotto_pots {
         (best_tier.price_per_ticket, best_tier)
     }
 
-    fun validate_discount_tiers(tiers: &vector<DiscountTier>): bool {
+    fun validate_discount_tiers(
+        min_tickets: &vector<u64>,
+        max_tickets: &vector<u64>,
+        tier_active_flags: &vector<bool>
+    ): bool {
         let i = 0;
-        let len = tiers.length();
+        let len = min_tickets.length();
         while (i < len) {
-            let tier_i = &tiers[i];
-            if (!tier_i.is_active) {
+            // Validate min and max tickets are greater than 0
+            if (min_tickets[i] == 0 || max_tickets[i] == 0) {
+                return false
+            };
+
+            if (!tier_active_flags[i]) {
                 i += 1;
                 continue
             };
 
-            // Check for overlaps with other tiers
+            // Check for overlaps with other active tiers
             let j = i + 1;
             while (j < len) {
-                let tier_j = &tiers[j];
-                if (tier_j.is_active) {
+                if (tier_active_flags[j]) {
                     // Check if ranges overlap
-                    if (tier_i.max_tickets >= tier_j.min_tickets &&
-                        tier_i.min_tickets <= tier_j.max_tickets) {
+                    if (max_tickets[i] >= min_tickets[j] &&
+                        min_tickets[i] <= max_tickets[j]) {
                         return false
                     };
                 };
