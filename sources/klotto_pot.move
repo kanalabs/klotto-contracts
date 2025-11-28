@@ -59,6 +59,8 @@ module klotto::lotto_pots {
     const ECLAIM_NOT_ENABLED: u64 = 1027;
     /// The draw time for the pot has already been reached.
     const EDRAW_TIME_ALREADY_REACHED: u64 = 1011;
+    /// Invalid discount tier configuration.
+    const EINVALID_DISCOUNT_TIER: u64 = 1028;
 
 
     // ====== Pot Types ======
@@ -94,6 +96,20 @@ module klotto::lotto_pots {
         Cashback,
         TreasuryVault,
         TakeRate,
+    }
+
+    // ====== Discount Structures ======
+    struct DiscountTier has copy, store, drop {
+        min_tickets: u64,
+        max_tickets: u64,
+        price_per_ticket: u64,
+        // Price in smallest units (cents)
+        is_active: bool
+    }
+
+    struct PotDiscountConfig has key {
+        is_enabled: bool,
+        tiers: vector<DiscountTier>,
     }
 
     // Main registry of pot object addresses
@@ -293,6 +309,7 @@ module klotto::lotto_pots {
         timestamp: u64,
         success: bool
     }
+
     #[event]
     struct FundsAddedToCashBack has drop, store {
         depositor: address,
@@ -301,7 +318,8 @@ module klotto::lotto_pots {
         timestamp: u64,
         success: bool
     }
-        #[event]
+
+    #[event]
     struct FundsAddedToTreasuryVault has drop, store {
         depositor: address,
         amount: u64,
@@ -372,6 +390,7 @@ module klotto::lotto_pots {
         updated_by: address,
         timestamp: u64,
     }
+
     #[event]
     struct AdminUpdatedEvent has drop, store {
         old_admin: address,
@@ -392,6 +411,32 @@ module klotto::lotto_pots {
         prize_amounts: vector<u64>
     }
 
+    #[event]
+    struct PotDiscountConfiguredEvent has drop, store {
+        pot_id: String,
+        is_enabled: bool,
+        tier_count: u64,
+        configured_by: address,
+        timestamp: u64,
+        pot_address: address,
+        success: bool
+    }
+
+    #[event]
+    struct BulkPurchaseEvent has drop, store {
+        buyer: address,
+        pot_id: String,
+        original_amount: u64,
+        discounted_amount: u64,
+        savings_percentage: u64,
+        ticket_count: u64,
+        applied_tier_min: u64,
+        applied_tier_max: u64,
+        price_per_ticket: u64,
+        timestamp: u64,
+        pot_address: address,
+        success: bool
+    }
 
     // Initialize the module, acting as a constructor
     fun init_module(deployer: &signer) {
@@ -494,7 +539,6 @@ module klotto::lotto_pots {
         let registry_addr = lotto_address();
         let config = borrow_global_mut<LottoRegistry>(registry_addr);
         config.pending_super_admin = new_super_admin_address;
-
     }
 
     public entry fun accept_super_admin(
@@ -614,7 +658,15 @@ module klotto::lotto_pots {
             winning_numbers: vector::empty(),
             cancellation_total: 0
         };
+
+        // Initialize empty discount configuration - admin will configure later
+        let discount_config = PotDiscountConfig {
+            is_enabled: false,
+            tiers: vector::empty<DiscountTier>()
+        };
+
         move_to(&pot_signer, pot_details);
+        move_to(&pot_signer, discount_config);
 
         // Register pot and emit event
         pots_registry.pots.add(copy pot_id, pot_address);
@@ -629,6 +681,32 @@ module klotto::lotto_pots {
         });
     }
 
+    // Create pot with discount configuration in one atomic operation
+    public entry fun create_pot_with_discount(
+        admin: &signer,
+        pot_id: String,
+        pot_type: u8,
+        pool_type: u8,
+        ticket_price: u64,
+        scheduled_draw_time: u64,
+        is_enabled: bool,
+        min_tickets: vector<u64>,
+        max_tickets: vector<u64>,
+        prices_per_ticket: vector<u64>,
+        tier_active_flags: vector<bool>
+    ) acquires LottoRegistry, PotDiscountConfig {
+        assert!(validate_discount_tiers(&min_tickets, &max_tickets, &tier_active_flags), EINVALID_DISCOUNT_TIER);
+        create_pot(admin, pot_id, pot_type, pool_type, ticket_price, scheduled_draw_time);
+        configure_pot_discount(
+            admin,
+            pot_id,
+            is_enabled,
+            min_tickets,
+            max_tickets,
+            prices_per_ticket,
+            tier_active_flags
+        );
+    }
 
     // Purchase tickets for a pot
     public entry fun purchase_tickets(
@@ -681,6 +759,255 @@ module klotto::lotto_pots {
 
             i += 1;
         };
+    }
+
+
+    // ====== Discount Management Functions ======
+
+    // Configure discount tiers for a pot
+    public entry fun configure_pot_discount(
+        admin: &signer,
+        pot_id: String,
+        is_enabled: bool,
+        min_tickets: vector<u64>,
+        max_tickets: vector<u64>,
+        prices_per_ticket: vector<u64>,
+        tier_active_flags: vector<bool>
+    ) acquires LottoRegistry, PotDiscountConfig {
+        assert_is_admin(admin);
+        assert!(exists_pot(pot_id), EPOT_NOT_FOUND);
+
+        // Validate input lengths match
+        let tier_count = min_tickets.length();
+        assert!(
+            tier_count == max_tickets.length() &&
+                tier_count == prices_per_ticket.length() &&
+                tier_count == tier_active_flags.length(),
+            EINVALID_INPUT_LENGTH
+        );
+
+        // Validate no overlapping ranges
+        assert!(validate_discount_tiers(&min_tickets, &max_tickets, &tier_active_flags), EINVALID_DISCOUNT_TIER);
+
+        let pot_address = get_pot_address(pot_id);
+        let discount_config = borrow_global_mut<PotDiscountConfig>(pot_address);
+
+        // Clear existing tiers and set new configuration
+        discount_config.tiers = vector::empty<DiscountTier>();
+        discount_config.is_enabled = is_enabled;
+
+        // Add new tiers with validation
+        let i = 0;
+        while (i < tier_count) {
+            let tier = DiscountTier {
+                min_tickets: min_tickets[i],
+                max_tickets: max_tickets[i],
+                price_per_ticket: prices_per_ticket[i],
+                is_active: tier_active_flags[i]
+            };
+
+            // Validate tier
+            assert!(tier.min_tickets <= tier.max_tickets, EINVALID_DISCOUNT_TIER);
+            assert!(tier.price_per_ticket > 0, EINVALID_AMOUNT);
+
+            discount_config.tiers.push_back(tier);
+            i += 1;
+        };
+
+        event::emit(PotDiscountConfiguredEvent {
+            pot_id,
+            is_enabled,
+            tier_count,
+            configured_by: signer::address_of(admin),
+            timestamp: timestamp::now_seconds(),
+            pot_address,
+            success: true
+        });
+    }
+
+    // Calculate discounted price per ticket for a given ticket count
+    fun calculate_discounted_price_per_ticket(
+        pot_address: address,
+        ticket_count: u64,
+        base_ticket_price: u64
+    ): (u64, DiscountTier) acquires PotDiscountConfig {
+        // If no discount config exists, return base price with default tier
+        if (!exists<PotDiscountConfig>(pot_address)) {
+            return (base_ticket_price, DiscountTier {
+                min_tickets: 1,
+                max_tickets: 100,
+                price_per_ticket: base_ticket_price,
+                is_active: true
+            })
+        };
+
+        let discount_config = borrow_global<PotDiscountConfig>(pot_address);
+        if (!discount_config.is_enabled || discount_config.tiers.length() == 0) {
+            return (base_ticket_price, DiscountTier {
+                min_tickets: 1,
+                max_tickets: 100,
+                price_per_ticket: base_ticket_price,
+                is_active: true
+            })
+        };
+
+        let best_tier = discount_config.tiers[0]; // Start with first tier
+
+        let i = 0;
+        while (i < discount_config.tiers.length()) {
+            let tier = discount_config.tiers[i];
+            if (!tier.is_active) {
+                i += 1;
+                continue
+            };
+
+            // Exact match found
+            if (ticket_count >= tier.min_tickets && ticket_count <= tier.max_tickets) {
+                return (tier.price_per_ticket, tier)
+            };
+
+            // Track the highest available tier for fallback
+            if (ticket_count > tier.max_tickets && tier.max_tickets > best_tier.max_tickets) {
+                best_tier = tier;
+            };
+
+            i += 1;
+        };
+
+        // Fallback: use the highest available tier
+        (best_tier.price_per_ticket, best_tier)
+    }
+
+    fun validate_discount_tiers(
+        min_tickets: &vector<u64>,
+        max_tickets: &vector<u64>,
+        tier_active_flags: &vector<bool>
+    ): bool {
+        let i = 0;
+        let len = min_tickets.length();
+        while (i < len) {
+            // Validate min and max tickets are greater than 0
+            if (min_tickets[i] == 0 || max_tickets[i] == 0) {
+                return false
+            };
+
+            if (!tier_active_flags[i]) {
+                i += 1;
+                continue
+            };
+
+            // Check for overlaps with other active tiers
+            let j = i + 1;
+            while (j < len) {
+                if (tier_active_flags[j]) {
+                    // Check if ranges overlap
+                    if (max_tickets[i] >= min_tickets[j] &&
+                        min_tickets[i] <= max_tickets[j]) {
+                        return false
+                    };
+                };
+                j += 1;
+            };
+            i += 1;
+        };
+        true
+    }
+
+    // Purchase tickets for a pot with discount support
+    public entry fun purchase_tickets_with_discount(
+        buyer: &signer,
+        pot_id: String,
+        ticket_count: u64,
+        all_numbers: vector<vector<u8>>,
+    ) acquires LottoRegistry, PotDetails, PotDiscountConfig {
+        let buyer_address = signer::address_of(buyer);
+        let now = timestamp::now_seconds();
+
+        // Verify pot exists and get its address
+        assert!(exists_pot(pot_id), EPOT_NOT_FOUND);
+        let pot_address = get_pot_address(pot_id);
+        let pot_details = borrow_global<PotDetails>(pot_address);
+        assert!(pot_details.status == STATUS_ACTIVE, EPOT_NOT_ACTIVE);
+        assert!(ticket_count == all_numbers.length(), EINVALID_TICKET_COUNT);
+        assert!(pot_details.pot_type >= 1 && pot_details.pot_type <= 4, EINVALID_POT_TYPE);
+        assert!(ticket_count > 0 && ticket_count <= 100, EINVALID_TICKET_COUNT);
+        assert!(now < pot_details.scheduled_draw_time, EDRAW_TIME_ALREADY_REACHED);
+        // Validate input for each set of numbers
+        let i = 0;
+        while (i < ticket_count) {
+            let numbers = all_numbers[i];
+            assert!(validate_numbers(&numbers), EINVALID_NUMBERS);
+            i += 1;
+        };
+
+        // Calculate price with discounts
+        let (price_per_ticket, applied_tier) = calculate_discounted_price_per_ticket(
+            pot_address,
+            ticket_count,
+            pot_details.ticket_price
+        );
+
+        let final_amount = price_per_ticket * ticket_count;
+        let original_amount = pot_details.ticket_price * ticket_count;
+        let savings_percentage = if (original_amount > 0 && original_amount > final_amount) {
+            ((original_amount - final_amount) * 100) / original_amount
+        } else {
+            0
+        };
+
+        // Process payment to the pot's store
+        process_payment(buyer, object::object_address(&pot_details.prize_store), final_amount);
+
+        // Record each ticket purchase
+        let i = 0;
+        while (i < ticket_count) {
+            emit_event(
+                buyer_address,
+                pot_id,
+                pot_details.pot_type,
+                pot_details.ticket_price,
+                all_numbers[i],
+                ticket_count,
+                final_amount,
+                true,
+                0,
+                now,
+                pot_address
+            );
+            i += 1;
+        };
+
+        // Emit bulk purchase event
+        event::emit(BulkPurchaseEvent {
+            buyer: buyer_address,
+            pot_id: copy pot_id,
+            original_amount,
+            discounted_amount: final_amount,
+            savings_percentage,
+            ticket_count,
+            applied_tier_min: applied_tier.min_tickets,
+            applied_tier_max: applied_tier.max_tickets,
+            price_per_ticket,
+            timestamp: now,
+            pot_address,
+            success: true
+        });
+    }
+
+    // ====== View Functions for Discounts ======
+
+    #[view]
+    public fun get_pot_discount_config(pot_id: String): (bool, vector<DiscountTier>)
+    acquires LottoRegistry, PotDiscountConfig {
+        assert!(exists_pot(pot_id), EPOT_NOT_FOUND);
+        let pot_address = get_pot_address(pot_id);
+
+        if (!exists<PotDiscountConfig>(pot_address)) {
+            return (false, vector::empty<DiscountTier>())
+        };
+
+        let discount_config = borrow_global<PotDiscountConfig>(pot_address);
+        (discount_config.is_enabled, discount_config.tiers)
     }
 
     // Validate lottery numbers
@@ -793,10 +1120,10 @@ module klotto::lotto_pots {
 
         event::emit(
             PotDrawEvent {
-                pot_id: pot_id,
+                pot_id,
                 draw_time: current_time,
                 winning_numbers: all_numbers,
-                winning_white_balls :white_balls_readable,
+                winning_white_balls: white_balls_readable,
                 winning_redball: (powerball_num as u64),
                 pot_address,
                 success: true
@@ -1873,7 +2200,7 @@ module klotto::lotto_pots {
     #[test_only]
     public fun get_pot_winning_numbers_count(pot_id: String): u64 acquires LottoRegistry, PotDetails {
         let details = get_pot_details(pot_id);
-        vector::length(&details.winning_numbers)
+        details.winning_numbers.length()
     }
 
     #[test_only]
