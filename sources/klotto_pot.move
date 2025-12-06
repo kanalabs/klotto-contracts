@@ -81,6 +81,7 @@ module klotto::lotto_pots {
     const STATUS_COMPLETED: u8 = 5;
     const STATUS_CANCELLATION_IN_PROGRESS: u8 = 6;
     const STATUS_WINNER_ANNOUNCEMENT_IN_PROGRESS: u8 = 7;
+    const STATUS_EXPIRED: u8 = 8;
 
     // Lottery configuration
     const WHITE_BALL_COUNT: u64 = 5;
@@ -285,6 +286,16 @@ module klotto::lotto_pots {
         pot_id: String,
         amount: u64,
         timestamp: u64,
+        pot_address: address,
+        success: bool
+    }
+
+    #[event]
+    struct ExpiredPotFundsMovedToTreasury has drop, store {
+        pot_id: String,
+        amount: u64,
+        expiry_time: u64,
+        moved_at: u64,
         pot_address: address,
         success: bool
     }
@@ -1377,6 +1388,50 @@ module klotto::lotto_pots {
                 pot_id: copy pot_id,
                 amount: remaining_balance,
                 timestamp: timestamp::now_seconds(),
+                pot_address,
+                success: true
+            }
+        );
+    }
+
+    // Move expired pot funds to treasury
+    public entry fun move_expired_pot_to_treasury(
+        admin: &signer,
+        pot_id: String,
+    ) acquires LottoRegistry, PotDetails {
+        assert_is_admin(admin);
+
+        assert!(exists_pot(pot_id), EPOT_NOT_FOUND);
+        let pot_address = get_pot_address(pot_id);
+        let pot_details = borrow_global_mut<PotDetails>(pot_address);
+
+        let current_time = timestamp::now_seconds();
+        assert!(current_time > pot_details.scheduled_draw_time, EDRAW_TIME_NOT_REACHED);
+        assert!(pot_details.status == STATUS_ACTIVE, EINVALID_STATUS);
+
+        let remaining_balance = fungible_asset::balance(pot_details.prize_store);
+        
+        // Update pot status to expired
+        pot_details.status = STATUS_EXPIRED;
+        
+        // Only move funds if there are any
+        if (remaining_balance > 0) {
+            let registry_addr = lotto_address();
+            let registry = borrow_global_mut<LottoRegistry>(registry_addr);
+            let treasury_vault_store = registry.vault;
+
+            // Use the pot's signer to withdraw funds
+            let pot_signer = object::generate_signer_for_extending(&pot_details.extend_ref);
+            let funds = dispatchable_fungible_asset::withdraw(&pot_signer, pot_details.prize_store, remaining_balance);
+            dispatchable_fungible_asset::deposit(treasury_vault_store, funds);
+        };
+
+        event::emit(
+            ExpiredPotFundsMovedToTreasury {
+                pot_id: copy pot_id,
+                amount: remaining_balance,
+                expiry_time: pot_details.scheduled_draw_time,
+                moved_at: current_time,
                 pot_address,
                 success: true
             }
