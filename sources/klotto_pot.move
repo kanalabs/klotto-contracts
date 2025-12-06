@@ -1407,7 +1407,11 @@ module klotto::lotto_pots {
 
         let current_time = timestamp::now_seconds();
         assert!(current_time > pot_details.scheduled_draw_time, EDRAW_TIME_NOT_REACHED);
-        assert!(pot_details.status == STATUS_ACTIVE, EINVALID_STATUS);
+        assert!(
+            pot_details.status == STATUS_COMPLETED || 
+            pot_details.status == STATUS_CANCELLED,
+            EINVALID_STATUS
+        );
 
         let remaining_balance = fungible_asset::balance(pot_details.prize_store);
         
