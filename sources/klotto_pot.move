@@ -61,6 +61,8 @@ module klotto::lotto_pots {
     const EDRAW_TIME_ALREADY_REACHED: u64 = 1011;
     /// Invalid discount tier configuration.
     const EINVALID_DISCOUNT_TIER: u64 = 1028;
+    /// method is deprecated.
+    const EMETHOD_DEPRECATED: u64 = 1029;
 
 
     // ====== Pot Types ======
@@ -111,6 +113,12 @@ module klotto::lotto_pots {
     struct PotDiscountConfig has key {
         is_enabled: bool,
         tiers: vector<DiscountTier>,
+    }
+
+    struct PotBallConfig has key {
+        white_ball_count: u64,
+        white_ball_max: u8,
+        powerball_max: u8,
     }
 
     // Main registry of pot object addresses
@@ -678,6 +686,10 @@ module klotto::lotto_pots {
 
         move_to(&pot_signer, pot_details);
         move_to(&pot_signer, discount_config);
+        move_to(
+            &pot_signer,
+            PotBallConfig { white_ball_count: WHITE_BALL_COUNT, white_ball_max: WHITE_BALL_MAX, powerball_max: POWERBALL_MAX }
+        );
 
         // Register pot and emit event
         pots_registry.pots.add(copy pot_id, pot_address);
@@ -692,8 +704,7 @@ module klotto::lotto_pots {
         });
     }
 
-    // Create pot with discount configuration in one atomic operation
-    public entry fun create_pot_with_discount(
+    public entry fun create_pot_dynamic(
         admin: &signer,
         pot_id: String,
         pot_type: u8,
@@ -704,10 +715,68 @@ module klotto::lotto_pots {
         min_tickets: vector<u64>,
         max_tickets: vector<u64>,
         prices_per_ticket: vector<u64>,
-        tier_active_flags: vector<bool>
+        tier_active_flags: vector<bool>,
+        white_ball_count: u64,
+        white_ball_max: u8,
+        powerball_max: u8
     ) acquires LottoRegistry, PotDiscountConfig {
-        assert!(validate_discount_tiers(&min_tickets, &max_tickets, &tier_active_flags), EINVALID_DISCOUNT_TIER);
-        create_pot(admin, pot_id, pot_type, pool_type, ticket_price, scheduled_draw_time);
+        // Validate inputs and permissions
+        let admin_address = signer::address_of(admin);
+        assert_is_admin(admin);
+        assert!(ticket_price > 0, EINVALID_AMOUNT);
+        assert!(pool_type == POOL_TYPE_FIXED || pool_type == POOL_TYPE_DYNAMIC, EINVALID_POOL_TYPE);
+        assert!(timestamp::now_seconds() < scheduled_draw_time, EDRAW_TIME_ALREADY_REACHED);
+        assert!(
+            pot_type == POT_TYPE_DAILY ||
+                pot_type == POT_TYPE_BIWEEKLY ||
+                pot_type == POT_TYPE_MONTHLY || pot_type == POT_TYPE_CUSTOM,
+            EINVALID_STATUS
+        );
+        let registry_addr = lotto_address();
+        // Check pot existence and get registry
+        let pots_registry = borrow_global_mut<LottoRegistry>(registry_addr);
+        assert!(!pots_registry.pots.contains(&pot_id), EPOT_ALREADY_EXISTS);
+
+        // Set up pot object and store
+        let constructor_ref = object::create_object(admin_address);
+        let pot_signer = object::generate_signer(&constructor_ref);
+        let pot_address = signer::address_of(&pot_signer);
+        let metadata = get_asset_metadata();
+        let prize_store = fungible_asset::create_store(&constructor_ref, metadata);
+        let store_address = object::object_address(&prize_store);
+
+        // Initialize pot details with all required resources
+        let pot_details = PotDetails {
+            pot_address,
+            pot_id: copy pot_id,
+            extend_ref: object::generate_extend_ref(&constructor_ref),
+            delete_ref: object::generate_delete_ref(&constructor_ref),
+            pot_type,
+            pool_type,
+            status: STATUS_ACTIVE,
+            ticket_price,
+            created_at: timestamp::now_seconds(),
+            scheduled_draw_time,
+            prize_store,
+            store_address,
+            prize_asset: metadata,
+            winners: big_ordered_map::new_with_reusable(),
+            refunds: big_ordered_map::new_with_reusable(),
+            winning_numbers: vector::empty(),
+            cancellation_total: 0
+        };
+
+        // Initialize empty discount configuration - admin will configure later
+        let discount_config = PotDiscountConfig {
+            is_enabled: false,
+            tiers: vector::empty<DiscountTier>()
+        };
+
+        move_to(&pot_signer, pot_details);
+        move_to(&pot_signer, discount_config);
+        move_to(&pot_signer, PotBallConfig { white_ball_count, white_ball_max, powerball_max });
+        // Register pot and emit event
+        pots_registry.pots.add(copy pot_id, pot_address);
         configure_pot_discount(
             admin,
             pot_id,
@@ -717,6 +786,32 @@ module klotto::lotto_pots {
             prices_per_ticket,
             tier_active_flags
         );
+        event::emit(PotCreatedEvent {
+            pot_id,
+            pot_type,
+            pool_type,
+            ticket_price,
+            created_at: timestamp::now_seconds(),
+            pot_address,
+            success: true
+        });
+    }
+
+    // Create pot with discount configuration in one atomic operation
+    public entry fun create_pot_with_discount(
+        _admin: &signer,
+        _pot_id: String,
+        _pot_type: u8,
+        _pool_type: u8,
+        _ticket_price: u64,
+        _scheduled_draw_time: u64,
+        _is_enabled: bool,
+        _min_tickets: vector<u64>,
+        _max_tickets: vector<u64>,
+        _prices_per_ticket: vector<u64>,
+        _tier_active_flags: vector<bool>
+    ) {
+        assert!(false, EMETHOD_DEPRECATED);
     }
 
     // Purchase tickets for a pot
@@ -772,8 +867,6 @@ module klotto::lotto_pots {
         };
     }
 
-
-    // ====== Discount Management Functions ======
 
     // Configure discount tiers for a pot
     public entry fun configure_pot_discount(
@@ -930,7 +1023,7 @@ module klotto::lotto_pots {
         pot_id: String,
         ticket_count: u64,
         all_numbers: vector<vector<u8>>,
-    ) acquires LottoRegistry, PotDetails, PotDiscountConfig {
+    ) acquires LottoRegistry, PotDetails, PotDiscountConfig, PotBallConfig {
         let buyer_address = signer::address_of(buyer);
         let now = timestamp::now_seconds();
 
@@ -944,10 +1037,10 @@ module klotto::lotto_pots {
         assert!(ticket_count > 0 && ticket_count <= 100, EINVALID_TICKET_COUNT);
         assert!(now < pot_details.scheduled_draw_time, EDRAW_TIME_ALREADY_REACHED);
         // Validate input for each set of numbers
+        let (w_count, w_max, p_max) = get_ball_config(pot_address);
         let i = 0;
         while (i < ticket_count) {
-            let numbers = all_numbers[i];
-            assert!(validate_numbers(&numbers), EINVALID_NUMBERS);
+            assert!(validate_numbers_dynamic(&all_numbers[i], w_count, w_max, p_max), EINVALID_NUMBERS);
             i += 1;
         };
 
@@ -1022,22 +1115,33 @@ module klotto::lotto_pots {
     }
 
     // Validate lottery numbers
-    fun validate_numbers(numbers: &vector<u8>): bool {
-        if (numbers.length() != 6) return false;
-
-        // Check white balls (first 5 numbers)
+    fun validate_numbers_dynamic(numbers: &vector<u8>, count: u64, max_w: u8, max_p: u8): bool {
+        if (numbers.length() != count + 1) return false;
         let i = 0;
         let seen = vector::empty();
-        while (i < 5) {
+        while (i < count) {
             let num = numbers[i];
-            if (num < 1 || num > 69 || seen.contains(&num)) return false;
+            if (num < 1 || num > max_w || seen.contains(&num)) return false;
             seen.push_back(num);
             i += 1;
         };
+        let powerball = numbers[count];
+        powerball >= 1 && powerball <= max_p
+    }
 
-        // Check powerball (last number)
-        let powerball = numbers[5];
-        powerball >= 1 && powerball <= 26
+    // Validate lottery numbers
+    fun validate_numbers(numbers: &vector<u8>): bool {
+        validate_numbers_dynamic(numbers, WHITE_BALL_COUNT, WHITE_BALL_MAX, POWERBALL_MAX)
+    }
+
+    // Dynamic Ball Config Fallback
+    fun get_ball_config(pot_addr: address): (u64, u8, u8) acquires PotBallConfig {
+        if (exists<PotBallConfig>(pot_addr)) {
+            let cfg = borrow_global<PotBallConfig>(pot_addr);
+            (cfg.white_ball_count, cfg.white_ball_max, cfg.powerball_max)
+        } else {
+            (WHITE_BALL_COUNT, WHITE_BALL_MAX, POWERBALL_MAX)
+        }
     }
 
     // Process payment for tickets
@@ -1088,7 +1192,7 @@ module klotto::lotto_pots {
     entry fun draw_pot(
         admin: &signer,
         pot_id: String
-    ) acquires LottoRegistry, PotDetails {
+    ) acquires LottoRegistry, PotDetails, PotBallConfig {
         assert_is_admin(admin);
 
         assert!(exists_pot(pot_id), EPOT_NOT_FOUND);
@@ -1101,11 +1205,11 @@ module klotto::lotto_pots {
         let current_time = timestamp::now_seconds();
         assert!(current_time >= pot_details.scheduled_draw_time, EDRAW_TIME_NOT_REACHED);
 
+        let (w_count, w_max, p_max) = get_ball_config(pot_address);
         let white_balls = vector::empty<u8>();
         let i = 0;
-        while (i < WHITE_BALL_COUNT) {
-            let random_num = (((randomness::u64_integer()) % (WHITE_BALL_MAX as u64)) as u8) + 1;
-
+        while (i < w_count) {
+            let random_num = (((randomness::u64_integer()) % (w_max as u64)) as u8) + 1;
             if (!white_balls.contains(&random_num)) {
                 white_balls.push_back(random_num);
                 i += 1;
@@ -1114,19 +1218,17 @@ module klotto::lotto_pots {
 
         sort_vector(&mut white_balls);
 
-        let powerball_random = randomness::u64_integer();
-        let powerball_num = ((powerball_random % (POWERBALL_MAX as u64)) as u8) + 1;
-
+        let powerball_num = ((randomness::u64_integer() % (p_max as u64)) as u8) + 1;
         let all_numbers = copy white_balls;
         all_numbers.push_back(powerball_num);
         pot_details.winning_numbers = all_numbers;
 
         // Convert to u64 for readable display
-        let white_balls_readable = vector::empty<u64>();
-        let i = 0;
-        while (i < white_balls.length()) {
-            white_balls_readable.push_back((white_balls[i] as u64));
-            i += 1;
+        let readable_whites = vector::empty<u64>();
+        let k = 0;
+        while (k < white_balls.length()) {
+            readable_whites.push_back((white_balls[k] as u64));
+            k += 1;
         };
 
         event::emit(
@@ -1134,7 +1236,7 @@ module klotto::lotto_pots {
                 pot_id,
                 draw_time: current_time,
                 winning_numbers: all_numbers,
-                winning_white_balls: white_balls_readable,
+                winning_white_balls: readable_whites,
                 winning_redball: (powerball_num as u64),
                 pot_address,
                 success: true
@@ -1408,16 +1510,16 @@ module klotto::lotto_pots {
         let current_time = timestamp::now_seconds();
         assert!(current_time > pot_details.scheduled_draw_time, EDRAW_TIME_NOT_REACHED);
         assert!(
-            pot_details.status == STATUS_COMPLETED || 
-            pot_details.status == STATUS_CANCELLED,
+            pot_details.status == STATUS_COMPLETED ||
+                pot_details.status == STATUS_CANCELLED,
             EINVALID_STATUS
         );
 
         let remaining_balance = fungible_asset::balance(pot_details.prize_store);
-        
+
         // Update pot status to expired
         pot_details.status = STATUS_EXPIRED;
-        
+
         // Only move funds if there are any
         if (remaining_balance > 0) {
             let registry_addr = lotto_address();
@@ -1474,33 +1576,11 @@ module klotto::lotto_pots {
 
     /// Allows an admin to move funds from the `treasury_vault` to the `cashback` fund.
     public entry fun fund_cashback_from_treasury(
-        admin: &signer,
-        amount: u64
-    ) acquires LottoRegistry {
-        assert_is_admin(admin);
-        assert!(amount > 0, EINVALID_AMOUNT);
-
-        let registry_addr = lotto_address();
-        let registry = borrow_global_mut<LottoRegistry>(registry_addr);
-        let registry_signer = object::generate_signer_for_extending(&registry.extend_ref);
-
-        let treasury_balance = fungible_asset::balance(registry.vault);
-        assert!(treasury_balance >= amount, EINSUFFICIENT_BALANCE);
-
-        let funds_to_move = dispatchable_fungible_asset::withdraw(
-            &registry_signer,
-            registry.vault,
-            amount
-        );
-
-        dispatchable_fungible_asset::deposit(registry.cashback, funds_to_move);
-
-        event::emit(FundsMovedToCashbackFromTreasury {
-            admin: signer::address_of(admin),
-            amount,
-            timestamp: timestamp::now_seconds(),
-            success: true
-        });
+        _admin: &signer,
+        _amount: u64
+    ) {
+        // This method is deprecated and will be removed in future versions.
+        assert!(false, EMETHOD_DEPRECATED);
     }
 
     // Withdraw funds from cashback to admin's primary store
@@ -2158,6 +2238,10 @@ module klotto::lotto_pots {
         object::create_object_address(&@klotto, LOTTO_SYMBOL)
     }
 
+    #[view]
+    public fun get_pot_ball_config(pot_id: String): (u64, u8, u8) acquires LottoRegistry, PotBallConfig {
+        get_ball_config(get_pot_address(pot_id))
+    }
 
     // Helper function to sort numbers
     fun sort_vector(v: &mut vector<u8>) {
@@ -2240,7 +2324,7 @@ module klotto::lotto_pots {
 
     #[test_only]
     #[lint::allow_unsafe_randomness]
-    public fun test_draw_pot(admin: &signer, pot_id: String) acquires LottoRegistry, PotDetails {
+    public fun test_draw_pot(admin: &signer, pot_id: String) acquires LottoRegistry, PotDetails, PotBallConfig {
         draw_pot(admin, pot_id);
     }
 
