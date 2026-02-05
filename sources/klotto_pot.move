@@ -138,6 +138,22 @@ module klotto::lotto_pots {
         extend_ref: ExtendRef,
     }
 
+    struct VipManager has key {
+        vip_approval_threshold: u64,
+        vip_revenue_shares: BigOrderedMap<String, VipRevenueShare>,
+    }
+
+    struct VipRevenueShare has copy, drop, store {
+        pot_id: String,
+        wallet_address: address,
+        amount: u64,
+        revenue_share_percentage: u64,
+        requires_approval: bool,
+        is_approved: bool,
+        is_paid: bool,
+        created_at: u64,
+    }
+
     #[resource_group_member(group = aptos_framework::object::ObjectGroup)]
     struct PotDetails has key {
         pot_address: address,
@@ -286,6 +302,35 @@ module klotto::lotto_pots {
         updated_by: address,
         timestamp: u64,
         pot_address: address,
+        success: bool
+    }
+
+    #[event]
+    struct VipRevenueShareCreated has drop, store {
+        pot_id: String,
+        wallet_address: address,
+        amount: u64,
+        requires_approval: bool,
+        timestamp: u64,
+        success: bool
+    }
+
+    #[event]
+    struct VipRevenueShareApproved has drop, store {
+        pot_id: String,
+        wallet_address: address,
+        amount: u64,
+        approved_by: address,
+        timestamp: u64,
+        success: bool
+    }
+
+    #[event]
+    struct VipRevenueSharePaid has drop, store {
+        pot_id: String,
+        wallet_address: address,
+        amount: u64,
+        timestamp: u64,
         success: bool
     }
 
@@ -1192,7 +1237,7 @@ module klotto::lotto_pots {
     entry fun draw_pot(
         admin: &signer,
         pot_id: String
-    ) acquires LottoRegistry, PotDetails, PotBallConfig {
+    ) acquires LottoRegistry, PotDetails, PotBallConfig, VipManager {
         assert_is_admin(admin);
 
         assert!(exists_pot(pot_id), EPOT_NOT_FOUND);
@@ -1244,6 +1289,51 @@ module klotto::lotto_pots {
         );
 
         pot_details.status = STATUS_DRAWN;
+
+        // Update VIP revenue share amount after draw
+        update_vip_share_amount(admin, pot_id);
+    }
+
+    fun update_vip_share_amount(
+        admin: &signer,
+        pot_id: String
+    ) acquires LottoRegistry, PotDetails, VipManager {
+        let registry_addr = lotto_address();
+        if (!exists<VipManager>(registry_addr)) return;
+
+        let vip_manager = borrow_global_mut<VipManager>(registry_addr);
+        if (!vip_manager.vip_revenue_shares.contains(&pot_id)) return;
+
+        let pot_address = get_pot_address(pot_id);
+        let pot_details = borrow_global<PotDetails>(pot_address);
+        let remaining_balance = fungible_asset::balance(pot_details.prize_store);
+
+        if (remaining_balance > 0) {
+            let mut_share = vip_manager.vip_revenue_shares.remove(&pot_id);
+            let vip_amount = (remaining_balance * mut_share.revenue_share_percentage) / 100;
+
+            // Update the share with calculated amount and approval logic
+            mut_share.amount = vip_amount;
+            mut_share.requires_approval = vip_amount >= vip_manager.vip_approval_threshold;
+            mut_share.is_approved = !mut_share.requires_approval;
+
+            // Add back the updated share
+            vip_manager.vip_revenue_shares.add(pot_id, mut_share);
+
+            event::emit(VipRevenueShareCreated {
+                pot_id,
+                wallet_address: mut_share.wallet_address,
+                amount: vip_amount,
+                requires_approval: mut_share.requires_approval,
+                timestamp: timestamp::now_seconds(),
+                success: true
+            });
+
+            // Auto-pay if no approval required
+            if (!mut_share.requires_approval) {
+                process_vip_payment(admin, pot_id);
+            };
+        };
     }
 
     // Announce winners for a drawn pot
@@ -1993,6 +2083,166 @@ module klotto::lotto_pots {
         });
     }
 
+
+    // VIP Management Functions
+    public entry fun initialize_vip_manager(
+        super_admin: &signer
+    ) acquires LottoRegistry {
+        assert_is_super_admin(super_admin);
+        let registry_addr = lotto_address();
+
+        if (!exists<VipManager>(registry_addr)) {
+            let registry_signer = &object::generate_signer_for_extending(
+                &borrow_global<LottoRegistry>(registry_addr).extend_ref
+            );
+
+            move_to(registry_signer, VipManager {
+                vip_approval_threshold: 10000000, // $100 in smallest units
+                vip_revenue_shares: big_ordered_map::new_with_config(128, 1024, false),
+            });
+        };
+    }
+
+    public entry fun create_vip_revenue_share_with_percentage(
+        admin: &signer,
+        pot_id: String,
+        wallet_address: address,
+        revenue_share_percentage: u64
+    ) acquires LottoRegistry, VipManager {
+        assert_is_admin(admin);
+        assert!(exists_pot(pot_id), EPOT_NOT_FOUND);
+        assert!(revenue_share_percentage > 0 && revenue_share_percentage <= 100, EINVALID_AMOUNT);
+
+        let registry_addr = lotto_address();
+        assert!(exists<VipManager>(registry_addr), ENO_STORE); // VipManager must exist
+        let vip_manager = borrow_global_mut<VipManager>(registry_addr);
+
+        // Check if VIP share already exists for this pot
+        assert!(!vip_manager.vip_revenue_shares.contains(&pot_id), EPOT_ALREADY_EXISTS);
+
+        let vip_share = VipRevenueShare {
+            pot_id: copy pot_id,
+            wallet_address,
+            amount: 0, // Amount will be set during draw
+            revenue_share_percentage,
+            requires_approval: false, // Will be determined during draw
+            is_approved: false,
+            is_paid: false,
+            created_at: timestamp::now_seconds(),
+        };
+
+        vip_manager.vip_revenue_shares.add(pot_id, vip_share);
+
+        event::emit(VipRevenueShareCreated {
+            pot_id,
+            wallet_address,
+            amount: 0,
+            requires_approval: false,
+            timestamp: timestamp::now_seconds(),
+            success: true
+        });
+    }
+
+    public entry fun update_vip_approval_threshold(
+        admin: &signer,
+        new_threshold: u64
+    ) acquires LottoRegistry, VipManager {
+        assert_is_admin(admin);
+        assert!(new_threshold > 0, EINVALID_AMOUNT);
+
+        let registry_addr = lotto_address();
+        assert!(exists<VipManager>(registry_addr), ENO_STORE);
+        let vip_manager = borrow_global_mut<VipManager>(registry_addr);
+        vip_manager.vip_approval_threshold = new_threshold;
+    }
+
+
+    public entry fun approve_vip_revenue_share(
+        admin: &signer,
+        pot_id: String
+    ) acquires LottoRegistry, VipManager, PotDetails {
+        assert_is_admin(admin);
+        assert!(exists_pot(pot_id), EPOT_NOT_FOUND);
+
+        let registry_addr = lotto_address();
+        assert!(exists<VipManager>(registry_addr), ENO_STORE);
+        let vip_manager = borrow_global_mut<VipManager>(registry_addr);
+
+        // Check if VIP share exists
+        assert!(vip_manager.vip_revenue_shares.contains(&pot_id), EPOT_NOT_FOUND);
+
+        let mut_share = vip_manager.vip_revenue_shares.remove(&pot_id);
+        assert!(mut_share.requires_approval, EINVALID_STATUS); // Must require approval
+        assert!(!mut_share.is_approved, EALREADY_CLAIMED); // Must not be already approved
+        assert!(!mut_share.is_paid, EALREADY_CLAIMED); // Must not be already paid
+        assert!(mut_share.amount > 0, ENO_PRIZE_AMOUNT); // Must have amount set
+
+        mut_share.is_approved = true;
+
+        event::emit(VipRevenueShareApproved {
+            pot_id: mut_share.pot_id,
+            wallet_address: mut_share.wallet_address,
+            amount: mut_share.amount,
+            approved_by: signer::address_of(admin),
+            timestamp: timestamp::now_seconds(),
+            success: true
+        });
+
+        // Add back the updated share
+        vip_manager.vip_revenue_shares.add(pot_id, mut_share);
+
+        // Process payment after approval
+        process_vip_payment(admin, pot_id);
+    }
+
+    fun process_vip_payment(
+        _admin: &signer,
+        pot_id: String
+    ) acquires LottoRegistry, VipManager, PotDetails {
+        let registry_addr = lotto_address();
+        let vip_manager = borrow_global_mut<VipManager>(registry_addr);
+
+        let mut_share = vip_manager.vip_revenue_shares.remove(&pot_id);
+        if (mut_share.is_paid || !mut_share.is_approved) {
+            // Add back unchanged if conditions not met
+            vip_manager.vip_revenue_shares.add(pot_id, mut_share);
+            return
+        };
+
+        assert!(mut_share.amount > 0, ENO_PRIZE_AMOUNT); // Must have valid amount
+
+        // Get pot details and validate
+        let pot_address = get_pot_address(pot_id);
+        let pot_details = borrow_global<PotDetails>(pot_address);
+        let pot_balance = fungible_asset::balance(pot_details.prize_store);
+
+        // Ensure pot has sufficient balance
+        assert!(pot_balance >= mut_share.amount, EINSUFFICIENT_BALANCE);
+
+        let pot_signer = object::generate_signer_for_extending(&pot_details.extend_ref);
+
+        let asset = dispatchable_fungible_asset::withdraw(
+            &pot_signer,
+            pot_details.prize_store,
+            mut_share.amount
+        );
+
+        primary_fungible_store::deposit(mut_share.wallet_address, asset);
+
+        mut_share.is_paid = true;
+
+        event::emit(VipRevenueSharePaid {
+            pot_id: mut_share.pot_id,
+            wallet_address: mut_share.wallet_address,
+            amount: mut_share.amount,
+            timestamp: timestamp::now_seconds(),
+            success: true
+        });
+
+        // Add back the updated share
+        vip_manager.vip_revenue_shares.add(pot_id, mut_share);
+    }
+
     fun get_asset_metadata(): Object<Metadata> {
         // Check if test asset exists (only in test environment)
         let test_asset_addr = object::create_object_address(&USDC_ASSET, b"TEST_USDC");
@@ -2232,6 +2482,24 @@ module klotto::lotto_pots {
         borrow_global<LottoRegistry>(registry_addr).cashback_claim_threshold
     }
 
+
+    #[view]
+    public fun get_vip_approval_threshold(): u64 acquires VipManager {
+        let registry_addr = lotto_address();
+        assert!(exists<VipManager>(registry_addr), ENO_STORE);
+        let vip_manager = borrow_global<VipManager>(registry_addr);
+        vip_manager.vip_approval_threshold
+    }
+
+    #[view]
+    public fun get_vip_revenue_share(pot_id: String): VipRevenueShare acquires VipManager {
+        let registry_addr = lotto_address();
+        assert!(exists<VipManager>(registry_addr), ENO_STORE);
+        let vip_manager = borrow_global<VipManager>(registry_addr);
+        assert!(vip_manager.vip_revenue_shares.contains(&pot_id), EPOT_NOT_FOUND);
+        *vip_manager.vip_revenue_shares.borrow(&pot_id)
+    }
+
     #[view]
     // Get the address of the KACHING
     public fun lotto_address(): address {
@@ -2324,7 +2592,10 @@ module klotto::lotto_pots {
 
     #[test_only]
     #[lint::allow_unsafe_randomness]
-    public fun test_draw_pot(admin: &signer, pot_id: String) acquires LottoRegistry, PotDetails, PotBallConfig {
+    public fun test_draw_pot(
+        admin: &signer,
+        pot_id: String
+    ) acquires LottoRegistry, PotDetails, PotBallConfig, VipManager {
         draw_pot(admin, pot_id);
     }
 
@@ -2384,5 +2655,35 @@ module klotto::lotto_pots {
     public fun get_pot_details_string(pot_id: String): String acquires LottoRegistry, PotDetails {
         let details = get_pot_details(pot_id);
         details.pot_id
+    }
+
+    #[test_only]
+    public fun get_vip_share_amount(pot_id: String): u64 acquires VipManager {
+        let share = get_vip_revenue_share(pot_id);
+        share.amount
+    }
+
+    #[test_only]
+    public fun get_vip_share_percentage(pot_id: String): u64 acquires VipManager {
+        let share = get_vip_revenue_share(pot_id);
+        share.revenue_share_percentage
+    }
+
+    #[test_only]
+    public fun get_vip_share_is_approved(pot_id: String): bool acquires VipManager {
+        let share = get_vip_revenue_share(pot_id);
+        share.is_approved
+    }
+
+    #[test_only]
+    public fun get_vip_share_is_paid(pot_id: String): bool acquires VipManager {
+        let share = get_vip_revenue_share(pot_id);
+        share.is_paid
+    }
+
+    #[test_only]
+    public fun get_vip_share_requires_approval(pot_id: String): bool acquires VipManager {
+        let share = get_vip_revenue_share(pot_id);
+        share.requires_approval
     }
 }
